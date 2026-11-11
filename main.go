@@ -951,6 +951,7 @@ type ThingsMCP struct {
 	lastSyncAt  time.Time
 	lastWriteAt time.Time
 	credential  [sha256.Size]byte
+	readOnly    bool // set from the server's READ_ONLY policy; refuses all writes
 }
 
 // bestHistory resolves the account's authoritative history key returned by
@@ -1030,6 +1031,7 @@ type UserManager struct {
 	oauth     *OAuthServer // set after OAuthServer is created
 	diagStore *DiagStore   // set after OAuthServer is created
 	newUser   func(email, password string, proxyURL *url.URL) (*ThingsMCP, error)
+	policy    accessPolicy
 	mu        sync.RWMutex
 }
 
@@ -1050,6 +1052,9 @@ func sameCredential(a, b [sha256.Size]byte) bool {
 
 func (um *UserManager) GetOrCreateUser(email, password string) (*ThingsMCP, error) {
 	email = strings.TrimSpace(email)
+	if err := um.policy.checkEmail(email); err != nil {
+		return nil, err
+	}
 	key := strings.ToLower(email)
 	digest := credentialDigest(key, password)
 	um.mu.RLock()
@@ -1073,6 +1078,7 @@ func (um *UserManager) GetOrCreateUser(email, password string) (*ThingsMCP, erro
 		return nil, err
 	}
 	t.credential = digest
+	t.readOnly = um.policy.readOnly
 
 	um.mu.Lock()
 	// Reuse a concurrently-created session only when it was created with the
@@ -1279,6 +1285,9 @@ func (t *ThingsMCP) syncAndRebuild() error {
 }
 
 func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
+	if t.readOnly {
+		return errReadOnly
+	}
 	expected, err := identifiableItems(items)
 	if err != nil {
 		return fmt.Errorf("validate commit: %w", err)
@@ -4470,6 +4479,15 @@ func defineTools(um *UserManager) []server.ServerTool {
 	for i := range tools {
 		tools[i].Tool.RawOutputSchema = outputSchemaFor(tools[i].Tool.Name)
 	}
+	if um.policy.readOnly {
+		readOnlyTools := tools[:0]
+		for _, tool := range tools {
+			if hint := tool.Tool.Annotations.ReadOnlyHint; hint != nil && *hint {
+				readOnlyTools = append(readOnlyTools, tool)
+			}
+		}
+		tools = readOnlyTools
+	}
 	return tools
 }
 
@@ -4494,6 +4512,13 @@ func main() {
 
 	um := NewUserManager()
 	um.proxyURLs = proxyURLs
+	um.policy = loadAccessPolicy()
+	if um.policy.allowed != nil {
+		log.Printf("Account allowlist: %d account(s)", len(um.policy.allowed))
+	}
+	if um.policy.readOnly {
+		log.Printf("READ_ONLY: write tools disabled")
+	}
 
 	// Initialize OAuth server with persistent state
 	dataDir := os.Getenv("DATA_DIR")

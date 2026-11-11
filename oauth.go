@@ -712,6 +712,19 @@ func (o *OAuthServer) handleAuthorizePost(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Refuse accounts outside the allowlist before their credentials are sent anywhere.
+	if err := o.um.policy.checkEmail(email); err != nil {
+		o.mu.RLock()
+		client := o.clients[clientID]
+		o.mu.RUnlock()
+		clientName := ""
+		if client != nil {
+			clientName = client.ClientName
+		}
+		o.renderLoginPage(w, clientName, "This server does not accept that Things Cloud account.", q.Encode())
+		return
+	}
+
 	// Verify Things Cloud credentials
 	var opts []thingscloud.ClientOption
 	if proxy := o.um.proxyForEmail(email); proxy != nil {
