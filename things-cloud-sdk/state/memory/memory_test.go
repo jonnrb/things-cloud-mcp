@@ -525,3 +525,27 @@ func TestStateUpdateIgnoresVersionedSettings(t *testing.T) {
 		t.Fatalf("settings changed task graph: %#v", s)
 	}
 }
+
+func TestStateUpdateIgnoresCommandRecords(t *testing.T) {
+	s := NewState()
+	err := s.Update(
+		things.Item{
+			UUID:   "99265a7f-72fe-4d9c-864a-5634022361b2",
+			Kind:   things.ItemKindCommand,
+			Action: things.ItemActionCreated,
+			P:      []byte(`{"anything":"goes"}`),
+		},
+		things.Item{
+			UUID:   "command-unknown-action",
+			Kind:   things.ItemKindCommand,
+			Action: things.ItemAction(99),
+			P:      []byte(`not-json`),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Command record blocked state update: %v", err)
+	}
+	if len(s.Tasks) != 0 || len(s.Areas) != 0 || len(s.Tags) != 0 || len(s.CheckListItems) != 0 {
+		t.Fatalf("Command record changed task graph: %#v", s)
+	}
+}
