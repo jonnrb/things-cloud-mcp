@@ -1,18 +1,24 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-ENV GOTOOLCHAIN=auto
+COPY go.mod go.sum ./
+COPY things-cloud-sdk/go.mod things-cloud-sdk/go.sum ./things-cloud-sdk/
+RUN go mod download
 
 COPY . .
-RUN go mod download
-RUN go build -o things-mcp .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o things-mcp .
 
-FROM alpine:latest
+FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && mkdir -p /data \
+    && chown 65532:65532 /data
 
 COPY --from=builder /app/things-mcp /usr/local/bin/things-mcp
+
+# Run as an unprivileged user; /data must be writable by uid 65532.
+USER 65532:65532
 
 EXPOSE 8080
 
