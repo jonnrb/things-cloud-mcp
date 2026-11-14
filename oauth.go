@@ -78,6 +78,11 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 	}
 
 	dbPath := filepath.Join(dataDir, "oauth.db")
+	// SQLite creates the WAL and shared-memory files with the database
+	// file's mode, so make the database private before opening it.
+	if err := createPrivateFile(dbPath); err != nil {
+		log.Fatalf("Failed to secure OAuth database: %v", err)
+	}
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)")
 	if err != nil {
 		log.Fatalf("Failed to open SQLite database: %v", err)
@@ -105,9 +110,6 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 		if _, err := db.Exec(ddl); err != nil {
 			log.Fatalf("Failed to create table: %v", err)
 		}
-	}
-	if err := os.Chmod(dbPath, 0600); err != nil {
-		log.Fatalf("Failed to secure OAuth database: %v", err)
 	}
 
 	o := &OAuthServer{
