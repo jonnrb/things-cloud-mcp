@@ -26,6 +26,8 @@ go build -o things-mcp .
 
 The server listens on port 8080 by default (set `PORT` to override). Optionally set `JWT_SECRET` for stable tokens across restarts. Things passwords stored for OAuth are encrypted with AES-GCM; set a durable high-entropy `CREDENTIALS_SECRET`, or persist the generated `DATA_DIR/credentials.key` alongside `oauth.db`. Refresh tokens are stored as hashes.
 
+The server makes `DATA_DIR` private to itself (mode `0700`). When it can't, because it doesn't own the directory, as with a Kubernetes volume shared with the pod through `fsGroup`, it uses the directory as it is unless anyone can write to it. The files it keeps there are private to it either way.
+
 - OAuth clients (Claude.ai, ChatGPT) authenticate via the built-in OAuth 2.1 flow
 - CLI clients (Claude Code, Cursor, Windsurf) use Basic auth headers
 

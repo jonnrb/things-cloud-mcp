@@ -70,11 +70,8 @@ type RefreshToken struct {
 // NewOAuthServer creates a new OAuth server, loading persisted state from dataDir.
 // JWT secret priority: JWT_SECRET env var > DB > generate new.
 func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
-	}
-	if err := os.Chmod(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to secure data directory %s: %v", dataDir, err)
+	if err := secureDataDir(dataDir); err != nil {
+		log.Fatalf("Failed to set up the data directory: %v", err)
 	}
 
 	dbPath := filepath.Join(dataDir, "oauth.db")
