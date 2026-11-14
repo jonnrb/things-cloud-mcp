@@ -1328,6 +1328,31 @@ func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
 	return nil
 }
 
+// warmUser signs a user in and builds their state from the whole history in
+// the background, so the first tool call doesn't wait for it. A tool call that
+// arrives meanwhile waits on opMu and then finds the state built.
+func (um *UserManager) warmUser(email, password string) {
+	go func() {
+		t, err := um.GetOrCreateUser(email, password)
+		if err != nil {
+			log.Printf("Warm-up skipped: %v", err)
+			return
+		}
+		t.opMu.Lock()
+		defer t.opMu.Unlock()
+		if t.getState() != nil {
+			return
+		}
+		start := time.Now()
+		if err := t.fullRebuild(); err != nil {
+			log.Printf("Warm-up failed after %s: %v", time.Since(start).Round(time.Millisecond), err)
+			return
+		}
+		t.lastSyncAt = time.Now()
+		log.Printf("Warm-up done in %s", time.Since(start).Round(time.Millisecond))
+	}()
+}
+
 func (t *ThingsMCP) callSerialized(ctx context.Context, req mcp.CallToolRequest, fn func(*ThingsMCP, context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)) (*mcp.CallToolResult, error) {
 	t.opMu.Lock()
 	defer t.opMu.Unlock()
@@ -4528,6 +4553,9 @@ func main() {
 	oauth := NewOAuthServer(um, dataDir)
 	um.oauth = oauth
 	um.diagStore = &DiagStore{db: oauth.db}
+	for email, password := range oauth.storedCredentials() {
+		um.warmUser(email, password)
+	}
 
 	hooks := &server.Hooks{}
 	hooks.AddAfterInitialize(func(ctx context.Context, id any, message *mcp.InitializeRequest, result *mcp.InitializeResult) {

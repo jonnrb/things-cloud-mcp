@@ -493,6 +493,17 @@ func (o *OAuthServer) parseJWT(tokenStr string) (map[string]any, error) {
 }
 
 // ResolveBearer validates a Bearer token and returns the user's ThingsMCP instance.
+// storedCredentials returns a copy of the credentials kept from past sign-ins.
+func (o *OAuthServer) storedCredentials() map[string]string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	out := make(map[string]string, len(o.credentials))
+	for email, password := range o.credentials {
+		out[email] = password
+	}
+	return out
+}
+
 func (o *OAuthServer) ResolveBearer(token string) (string, string, error) {
 	claims, err := o.parseJWT(token)
 	if err != nil {
@@ -965,6 +976,9 @@ func (o *OAuthServer) handleAuthCodeGrant(w http.ResponseWriter, r *http.Request
 	o.mu.Unlock()
 
 	log.Printf("OAuth: tokens issued for %s", email)
+	if o.um != nil {
+		o.um.warmUser(email, password)
+	}
 
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
