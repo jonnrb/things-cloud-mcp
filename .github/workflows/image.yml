@@ -2,7 +2,7 @@ name: image
 
 on:
   push:
-    branches: [frostnet-hardening]
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
