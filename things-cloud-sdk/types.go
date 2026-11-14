@@ -97,6 +97,19 @@ func IsSettingsKind(kind ItemKind) bool {
 	return true
 }
 
+// ItemKindCommand is an internal Things Cloud record (it carries a standard
+// UUID rather than a Base58 Things ID) that newer Things apps write into the
+// history. It does not describe a task, area, tag or checklist item.
+const ItemKindCommand ItemKind = "Command"
+
+// IsIgnoredKind reports whether kind is a record that never contributes to the
+// task graph and can be skipped safely: versioned settings and Command records.
+// Unknown task/area/tag/checklist kinds are still not ignored, so a real schema
+// change keeps failing loudly instead of silently dropping data.
+func IsIgnoredKind(kind ItemKind) bool {
+	return IsSettingsKind(kind) || kind == ItemKindCommand
+}
+
 // Timestamp allows unix epochs represented as float or ints to be unmarshalled
 // into time.Time objects
 type Timestamp time.Time

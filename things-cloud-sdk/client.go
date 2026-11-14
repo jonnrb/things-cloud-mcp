@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -189,13 +191,62 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		log.Println("REQUEST:", string(bs))
 	}
 
-	resp, err := c.client.Do(req)
-	if c.Debug {
-		if err == nil {
-			bs, _ := httputil.DumpResponse(resp, true)
-			log.Println("RESPONSE:", string(bs))
+	for attempt := 0; ; attempt++ {
+		resp, err := c.client.Do(req)
+		if c.Debug {
+			if err == nil {
+				bs, _ := httputil.DumpResponse(resp, true)
+				log.Println("RESPONSE:", string(bs))
+			}
+			log.Println()
 		}
-		log.Println()
+		if err != nil || !shouldRetryRead(req, resp, attempt) {
+			return resp, err
+		}
+		wait := retryDelay(resp, attempt)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		log.Printf("things cloud: %s on %s %s, retrying in %s", resp.Status, req.Method, req.URL.Path, wait)
+		timer := time.NewTimer(wait)
+		select {
+		case <-req.Context().Done():
+			timer.Stop()
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
 	}
-	return resp, err
+}
+
+// Read requests rejected with 429 are retried a bounded number of times.
+// Writes are never retried here: a write may already have been applied.
+var (
+	maxReadRetries     = 2
+	readRetryBaseDelay = 2 * time.Second
+	readRetryMaxDelay  = 30 * time.Second
+)
+
+func shouldRetryRead(req *http.Request, resp *http.Response, attempt int) bool {
+	if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxReadRetries {
+		return false
+	}
+	return req.Method == http.MethodGet || req.Method == http.MethodHead
+}
+
+// retryDelay honors a Retry-After header in seconds, capped, and otherwise
+// backs off exponentially from readRetryBaseDelay.
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			d := time.Duration(secs) * time.Second
+			if d > readRetryMaxDelay {
+				d = readRetryMaxDelay
+			}
+			return d
+		}
+	}
+	d := readRetryBaseDelay << attempt
+	if d > readRetryMaxDelay {
+		d = readRetryMaxDelay
+	}
+	return d
 }
