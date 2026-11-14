@@ -304,7 +304,7 @@ func (s *State) Update(items ...things.Item) error {
 		}
 		var target any
 		switch rawItem.Kind {
-		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+		case things.ItemKindTask7, things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			target = &things.TaskActionItemPayload{}
 		case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
 			target = &things.CheckListActionItemPayload{}
@@ -331,7 +331,7 @@ func (s *State) Update(items ...things.Item) error {
 			rawItem.UUID = things.EncodeLegacyIdentifier(rawItem.UUID)
 		}
 		switch rawItem.Kind {
-		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+		case things.ItemKindTask7, things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			item := things.TaskActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
 			if legacy {

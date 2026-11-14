@@ -499,7 +499,7 @@ func TestStateUpdateRejectsUnknownKind(t *testing.T) {
 	s := NewState()
 	err := s.Update(things.Item{
 		UUID:   "future-item",
-		Kind:   things.ItemKind("Task7"),
+		Kind:   things.ItemKind("Task8"),
 		Action: things.ItemActionCreated,
 		P:      []byte(`{}`),
 	})
@@ -547,5 +547,52 @@ func TestStateUpdateIgnoresCommandRecords(t *testing.T) {
 	}
 	if len(s.Tasks) != 0 || len(s.Areas) != 0 || len(s.Tags) != 0 || len(s.CheckListItems) != 0 {
 		t.Fatalf("Command record changed task graph: %#v", s)
+	}
+}
+
+func TestStateUpdateReadsTask7(t *testing.T) {
+	const id = "KXJnBwmWiWyVqd8YKR8wvm"
+	s := NewState()
+	err := s.Update(
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask7,
+			Action: things.ItemActionCreated,
+			P:      []byte(`{"tt":"Written by Things 3.23","ss":0,"st":1,"tp":0,"cd":1763100000,"md":null,"sr":null,"tir":null,"dd":null,"rr":null,"rt":[],"tr":false,"ar":[],"pr":[],"tg":[]}`),
+		},
+		// Older apps and this server still write Task6 modifications onto the
+		// same task.
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask,
+			Action: things.ItemActionModified,
+			P:      []byte(`{"tt":"Renamed by a Task6 writer","md":1763100100}`),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Task7 blocked state update: %v", err)
+	}
+	task, ok := s.Tasks[id]
+	if !ok {
+		t.Fatalf("Task7 task missing from state: %#v", s.Tasks)
+	}
+	if task.Title != "Renamed by a Task6 writer" {
+		t.Fatalf("title = %q, want the Task6 rename", task.Title)
+	}
+}
+
+func TestStateUpdateRejectsMalformedTask7(t *testing.T) {
+	s := NewState()
+	err := s.Update(things.Item{
+		UUID:   "KXJnBwmWiWyVqd8YKR8wvm",
+		Kind:   things.ItemKindTask7,
+		Action: things.ItemActionCreated,
+		P:      []byte(`{"tt":`),
+	})
+	if err == nil {
+		t.Fatal("expected malformed Task7 payload error")
+	}
+	if len(s.Tasks) != 0 {
+		t.Fatalf("state changed after malformed Task7 payload: %#v", s.Tasks)
 	}
 }

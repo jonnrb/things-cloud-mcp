@@ -60,6 +60,7 @@ var (
 	ItemKindChecklistItem3 ItemKind = "ChecklistItem3"
 	// ItemKindTask identifies a Task or Subtask
 	ItemKindTask      ItemKind = "Task6"
+	ItemKindTask7     ItemKind = "Task7"
 	ItemKindTask4     ItemKind = "Task4"
 	ItemKindTask3     ItemKind = "Task3"
 	ItemKindTaskPlain ItemKind = "Task"
@@ -95,6 +96,18 @@ func IsSettingsKind(kind ItemKind) bool {
 		}
 	}
 	return true
+}
+
+// IsTaskKind reports whether kind is one of the task kinds the readers decode.
+// Things 3.23 and later write Task7 with the same properties as Task6, so it is
+// read like Task6. Task7 is a read kind only: writes keep using ItemKindTask.
+func IsTaskKind(kind ItemKind) bool {
+	switch kind {
+	case ItemKindTask7, ItemKindTask, ItemKindTask4, ItemKindTask3, ItemKindTaskPlain:
+		return true
+	default:
+		return false
+	}
 }
 
 // ItemKindCommand is an internal Things Cloud record (it carries a standard
