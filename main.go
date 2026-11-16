@@ -1032,6 +1032,7 @@ type UserManager struct {
 	diagStore *DiagStore   // set after OAuthServer is created
 	newUser   func(email, password string, proxyURL *url.URL) (*ThingsMCP, error)
 	policy    accessPolicy
+	single    *singleUser // set in single-user mode, which ignores Authorization
 	mu        sync.RWMutex
 }
 
@@ -1105,6 +1106,13 @@ func (um *UserManager) proxyForEmail(email string) *url.URL {
 // httpContextFunc extracts user identity from the HTTP request and stores it in context.
 func (um *UserManager) httpContextFunc(ctx context.Context, r *http.Request) context.Context {
 	ctx = context.WithValue(ctx, baseURLContextKey, getBaseURL(r))
+
+	if um.single != nil {
+		return context.WithValue(ctx, userContextKey, &UserInfo{
+			Email:    um.single.email,
+			Password: um.single.password,
+		})
+	}
 
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -4545,16 +4553,31 @@ func main() {
 		log.Printf("READ_ONLY: write tools disabled")
 	}
 
-	// Initialize OAuth server with persistent state
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "data"
+	single, err := loadSingleUser()
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
-	oauth := NewOAuthServer(um, dataDir)
-	um.oauth = oauth
-	um.diagStore = &DiagStore{db: oauth.db}
-	for email, password := range oauth.storedCredentials() {
-		um.warmUser(email, password)
+	um.single = single
+
+	var oauth *OAuthServer
+	if single != nil {
+		if err := um.policy.checkEmail(single.email); err != nil {
+			log.Fatalf("THINGS_EMAIL: %v", err)
+		}
+		log.Printf("Single-user mode: every request acts as %s; OAuth is off", maskEmail(single.email))
+		um.warmUser(single.email, single.password)
+	} else {
+		// Initialize OAuth server with persistent state
+		dataDir := os.Getenv("DATA_DIR")
+		if dataDir == "" {
+			dataDir = "data"
+		}
+		oauth = NewOAuthServer(um, dataDir)
+		um.oauth = oauth
+		um.diagStore = &DiagStore{db: oauth.db}
+		for email, password := range oauth.storedCredentials() {
+			um.warmUser(email, password)
+		}
 	}
 
 	hooks := &server.Hooks{}
@@ -4584,11 +4607,7 @@ func main() {
 		server.WithHTTPContextFunc(um.httpContextFunc),
 	)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	addr := ":" + port
+	addr := listenAddr(os.Getenv("HOST"), os.Getenv("PORT"), single != nil)
 
 	// Use a custom mux so we can serve both the landing page and MCP endpoint
 	mux := http.NewServeMux()
@@ -4607,25 +4626,18 @@ func main() {
 	})
 
 	// Wrap /mcp handler with 401 WWW-Authenticate for unauthenticated requests
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			base := getBaseURL(r)
-			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+base+`/.well-known/oauth-protected-resource"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		streamServer.ServeHTTP(w, r)
-	})
+	mux.HandleFunc("/mcp", mcpHandler(um, streamServer))
 
 	// OAuth 2.1 routes (path-aware per RFC 9728: client appends resource path)
-	mux.HandleFunc("/.well-known/oauth-protected-resource", oauth.handleProtectedResourceMetadata)
-	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", oauth.handleProtectedResourceMetadata)
-	mux.HandleFunc("/.well-known/oauth-authorization-server", oauth.handleAuthServerMetadata)
-	mux.HandleFunc("/.well-known/oauth-authorization-server/mcp", oauth.handleAuthServerMetadata)
-	mux.HandleFunc("/register", oauth.handleRegister)
-	mux.HandleFunc("/authorize", oauth.handleAuthorize)
-	mux.HandleFunc("/token", oauth.handleToken)
+	if oauth != nil {
+		mux.HandleFunc("/.well-known/oauth-protected-resource", oauth.handleProtectedResourceMetadata)
+		mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", oauth.handleProtectedResourceMetadata)
+		mux.HandleFunc("/.well-known/oauth-authorization-server", oauth.handleAuthServerMetadata)
+		mux.HandleFunc("/.well-known/oauth-authorization-server/mcp", oauth.handleAuthServerMetadata)
+		mux.HandleFunc("/register", oauth.handleRegister)
+		mux.HandleFunc("/authorize", oauth.handleAuthorize)
+		mux.HandleFunc("/token", oauth.handleToken)
+	}
 
 	mux.HandleFunc("/docs", handleDocsPage)
 	mux.HandleFunc("/how-it-works", handleHowItWorksPage)
@@ -4647,6 +4659,10 @@ func main() {
 </urlset>`))
 	})
 	mux.HandleFunc("/d/", func(w http.ResponseWriter, r *http.Request) {
+		if um.diagStore == nil {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -4672,10 +4688,16 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	shown := addr
+	if strings.HasPrefix(shown, ":") {
+		shown = "localhost" + shown
+	}
 	log.Printf("Things Cloud MCP server listening on %s", addr)
-	log.Printf("  Landing page: http://localhost%s/", addr)
-	log.Printf("  MCP endpoint: http://localhost%s/mcp", addr)
-	log.Printf("  OAuth metadata: http://localhost%s/.well-known/oauth-authorization-server", addr)
+	log.Printf("  Landing page: http://%s/", shown)
+	log.Printf("  MCP endpoint: http://%s/mcp", shown)
+	if oauth != nil {
+		log.Printf("  OAuth metadata: http://%s/.well-known/oauth-authorization-server", shown)
+	}
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
