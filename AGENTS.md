@@ -16,6 +16,8 @@ Run the same four checks in `things-cloud-sdk/` after SDK changes. The server de
 Environment variables:
 
 - `PORT`: HTTP port.
+- `HOST`: address to listen on; every address by default, `127.0.0.1` in single-user mode.
+- `THINGS_EMAIL`, `THINGS_PASSWORD`: one Things Cloud account for single-user mode (`single_user.go`), where every request acts as it without an `Authorization` header and OAuth is off. Set both or neither.
 - `DATA_DIR`: SQLite and credential-key directory (default `data/`).
 - `JWT_SECRET`: base64 JWT signing key; generated when absent.
 - `CREDENTIALS_SECRET`: durable high-entropy secret used to derive the AES key for Things passwords at rest. When absent, the server creates `DATA_DIR/credentials.key` with mode `0600`.
@@ -23,7 +25,7 @@ Environment variables:
 
 ## Architecture and safety invariants
 
-The single-package Go MCP server is in `main.go`, `oauth.go`, and `landing.go`. Requests authenticate with Basic credentials or OAuth bearer tokens. `UserManager` creates a per-account `ThingsMCP`; the cache binds an account to a digest of the authenticated credentials, never just an email address.
+The single-package Go MCP server is in `main.go`, `oauth.go`, and `landing.go`. Requests authenticate with Basic credentials or OAuth bearer tokens, or in single-user mode act as the configured account. `UserManager` creates a per-account `ThingsMCP`; the cache binds an account to a digest of the authenticated credentials, never just an email address.
 
 Key SDK types from `github.com/arthursoares/things-cloud-sdk`:
 
