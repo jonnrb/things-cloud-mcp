@@ -65,7 +65,7 @@ Use `errResult(msg)` for tool errors and `jsonResult(v)` for successful structur
 
 ## Wire format
 
-Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. Recurrence templates must remain hidden from normal read-tool results. A rule's `tp` is 0 for a repeat on a schedule and 1 for one after completion. Things 3.23 and later can keep a rule in `rp` instead, which this server does not read (`Task.ModernRepeater`).
+Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. A reminder is `ato`, seconds after midnight of the scheduled day `sr`; Things has no reminder date (`rmd` is a repeat rule's migration date, so never write it), so a reminder needs a scheduled day and goes when the task loses its day. Recurrence templates must remain hidden from normal read-tool results. A rule's `tp` is 0 for a repeat on a schedule and 1 for one after completion. Things 3.23 and later can keep a rule in `rp` instead, which this server does not read (`Task.ModernRepeater`).
 
 `parseDate()` accepts RFC3339 first and then `YYYY-MM-DD`. Date filters are exclusive. Output dates use ISO 8601 and omit zero-value years.
 

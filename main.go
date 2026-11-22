@@ -437,22 +437,15 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 		tg = strings.Split(v, ",")
 	}
 
-	var rmd *int64
 	var ato *int
-	if rmdStr, ok := opts["reminder_date"]; ok {
-		if timeStr, ok2 := opts["reminder_time"]; ok2 {
-			if dt := parseDay(rmdStr); dt != nil {
-				if offset, valid := parseTime(timeStr); valid {
-					ts := dt.Unix()
-					rmd = &ts
-					ato = &offset
-				}
-			}
+	if v, ok := opts["reminder_time"]; ok {
+		if offset, valid := parseTime(v); valid {
+			ato = &offset
 		}
 	}
 
 	return TaskCreatePayload{
-		Tp: tp, Sr: sr, Dds: nil, Rt: []string{}, Rmd: rmd,
+		Tp: tp, Sr: sr, Dds: nil, Rt: []string{}, Rmd: nil,
 		Ss: 0, Tr: false, Dl: []string{}, Icp: false, St: st,
 		Ar: ar, Tt: title, Do: 0, Lai: nil, Tir: tir,
 		Tg: tg, Agr: agr, Ix: ix, Cd: now, Lt: false,
@@ -481,10 +474,8 @@ func (u *taskUpdate) Status(ss int) *taskUpdate       { u.fields["ss"] = ss; ret
 func (u *taskUpdate) StopDate(ts float64) *taskUpdate { u.fields["sp"] = ts; return u }
 func (u *taskUpdate) Trash(b bool) *taskUpdate        { u.fields["tr"] = b; return u }
 func (u *taskUpdate) Deadline(dd int64) *taskUpdate   { u.fields["dd"] = dd; return u }
-func (u *taskUpdate) Reminder(rmd int64) *taskUpdate  { u.fields["rmd"] = rmd; return u }
 func (u *taskUpdate) AlarmOffset(ato int) *taskUpdate { u.fields["ato"] = ato; return u }
 func (u *taskUpdate) ClearReminder() *taskUpdate {
-	u.fields["rmd"] = nil
 	u.fields["ato"] = nil
 	return u
 }
@@ -1414,6 +1405,41 @@ func (t *ThingsMCP) refuseRepeatAfterCompletion(task *thingscloud.Task) error {
 // schedule. 1 repeats it after completion.
 const repeatOnSchedule = 0
 
+// A reminder in Things is a time of day on the day a to-do is scheduled. The
+// apps keep it as ato, seconds after midnight of sr, and have no reminder date:
+// rmd, which this server used to write as one, is the date a repeat rule was
+// migrated, per arthursoares/things-cloud-sdk. So a reminder needs a scheduled
+// day, and a to-do that loses its day loses its reminder, as in the apps.
+var (
+	errReminderDate      = errors.New("reminder_date isn't taken: Things reminds you on the day a to-do is scheduled, so set schedule to that day and reminder_time to the time")
+	errReminderNeedsADay = errors.New("a reminder needs a day: schedule the to-do for today, tonight or a date")
+)
+
+// refuseReminderDate refuses a write that names a reminder date.
+func refuseReminderDate(req mcp.CallToolRequest) error {
+	if _, ok := req.GetArguments()["reminder_date"]; ok {
+		return errReminderDate
+	}
+	return nil
+}
+
+// isDated reports whether a schedule argument names a day: today, tonight or
+// a date.
+func isDated(schedule string) bool {
+	switch schedule {
+	case "today", "tonight":
+		return true
+	case "", "anytime", "someday", "inbox":
+		return false
+	}
+	return parseDay(schedule) != nil
+}
+
+// hasDay reports whether a to-do is scheduled for a day.
+func hasDay(task *thingscloud.Task) bool {
+	return task.ScheduledDate != nil && task.ScheduledDate.Year() > 1970
+}
+
 // isUntitledTask returns true if the task has no real title. Things sometimes
 // retains shells of tasks created and abandoned without ever being typed into;
 // these are not actionable items and should be hidden from list queries.
@@ -1591,17 +1617,12 @@ func (t *ThingsMCP) validateOpts(opts map[string]string) error {
 	if v := opts["deadline"]; v != "" && parseDay(v) == nil {
 		return fmt.Errorf("invalid deadline: %s", v)
 	}
-	reminderDate, hasReminderDate := opts["reminder_date"]
-	reminderTime, hasReminderTime := opts["reminder_time"]
-	if hasReminderDate != hasReminderTime {
-		return fmt.Errorf("reminder_date and reminder_time must be provided together")
-	}
-	if hasReminderDate {
-		if parseDay(reminderDate) == nil {
-			return fmt.Errorf("invalid reminder_date: %s", reminderDate)
+	if v, ok := opts["reminder_time"]; ok {
+		if _, valid := parseTime(v); !valid {
+			return fmt.Errorf("invalid reminder_time: %s", v)
 		}
-		if _, ok := parseTime(reminderTime); !ok {
-			return fmt.Errorf("invalid reminder_time: %s", reminderTime)
+		if !isDated(opts["schedule"]) {
+			return errReminderNeedsADay
 		}
 	}
 	return nil
@@ -3343,9 +3364,12 @@ func (t *ThingsMCP) handleCreateTask(_ context.Context, req mcp.CallToolRequest)
 	if err := refuseRecurrence(req); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	opts := make(map[string]string)
-	for _, key := range []string{"note", "schedule", "deadline", "project_uuid", "heading_uuid", "area_uuid", "tags", "checklist", "reminder_date", "reminder_time"} {
+	for _, key := range []string{"note", "schedule", "deadline", "project_uuid", "heading_uuid", "area_uuid", "tags", "checklist", "reminder_time"} {
 		if v := req.GetString(key, ""); v != "" {
 			opts[key] = v
 		}
@@ -3399,9 +3423,12 @@ func (t *ThingsMCP) handleCreateProject(_ context.Context, req mcp.CallToolReque
 	if err := refuseRecurrence(req); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	opts := map[string]string{"type": "project"}
-	for _, key := range []string{"note", "schedule", "deadline", "area_uuid", "tags", "reminder_date", "reminder_time"} {
+	for _, key := range []string{"note", "schedule", "deadline", "area_uuid", "tags", "reminder_time"} {
 		if v := req.GetString(key, ""); v != "" {
 			opts[key] = v
 		}
@@ -3618,6 +3645,9 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	if err := refuseRecurrence(req); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	// Validate referenced UUIDs
 	editOpts := make(map[string]string)
@@ -3631,7 +3661,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	}
 	args := req.GetArguments()
 	mutating := false
-	for _, key := range []string{"title", "note", "schedule", "deadline", "area_uuid", "project_uuid", "heading_uuid", "tags", "reminder_date", "reminder_time", "status"} {
+	for _, key := range []string{"title", "note", "schedule", "deadline", "area_uuid", "project_uuid", "heading_uuid", "tags", "reminder_time", "status"} {
 		if _, ok := args[key]; ok {
 			mutating = true
 			break
@@ -3720,20 +3750,23 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	if _, ok := args["tags"]; ok {
 		u.Tags(splitUUIDs(req.GetString("tags", "")))
 	}
-	if rmdStr := req.GetString("reminder_date", ""); rmdStr != "" {
-		if rmdStr == "none" {
-			u.ClearReminder()
-		} else {
-			timeStr := req.GetString("reminder_time", "")
-			dt := parseDay(rmdStr)
-			offset, valid := parseTime(timeStr)
-			if dt == nil || !valid {
-				return errResult("valid reminder_date and reminder_time must be provided together"), nil
-			}
-			u.Reminder(dt.Unix()).AlarmOffset(offset)
+	if v := req.GetString("reminder_time", ""); v == "none" {
+		u.ClearReminder()
+	} else if v != "" {
+		offset, valid := parseTime(v)
+		if !valid {
+			return errResult(fmt.Sprintf("invalid reminder_time: %s", v)), nil
 		}
-	} else if _, ok := args["reminder_time"]; ok {
-		return errResult("reminder_date and reminder_time must be provided together"), nil
+		dated := isDated(sched)
+		if sched == "" {
+			dated = editTarget != nil && hasDay(editTarget)
+		}
+		if !dated {
+			return errResult(errReminderNeedsADay.Error()), nil
+		}
+		u.AlarmOffset(offset)
+	} else if sched != "" && !isDated(sched) && editTarget != nil && editTarget.AlarmTimeOffset != nil {
+		u.ClearReminder()
 	}
 	if v := req.GetString("status", ""); v != "" {
 		switch v {
@@ -4015,8 +4048,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign this task to. Use things_find_areas to find area UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs to apply. Use things_find_tags to find tag UUIDs.")),
 				mcp.WithString("checklist", mcp.Description("Comma-separated checklist item titles to create within the task")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled. Needs schedule today, tonight or a date.")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleCreateTask(ctx, req)
@@ -4045,8 +4077,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("deadline", mcp.Description("Deadline date in YYYY-MM-DD format")),
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign this project to. Use things_find_areas to find area UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs to apply. Use things_find_tags to find tag UUIDs.")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled. Needs schedule today, tonight or a date.")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleCreateProject(ctx, req)
@@ -4149,8 +4180,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("project_uuid", mcp.Description("UUID of the active pending project to move to. Completed, canceled, and trashed projects are rejected. Use things_find_projects to find project UUIDs.")),
 				mcp.WithString("heading_uuid", mcp.Description("UUID of an active heading inside an active pending project. Headings in completed, canceled, or trashed projects are rejected. Use things_find_headings to find heading UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs (replaces all existing tags; empty string clears them). Use things_find_tags to find tag UUIDs.")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format, or \"none\" to clear. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled, or \"none\" to remove the reminder. Needs a day: schedule today, tonight or a date, in this call or already. Scheduling the item for anytime, someday or the inbox removes its reminder.")),
 				mcp.WithString("status", mcp.Description("Set item status: pending, completed, canceled, trashed (move to trash), restored (restore from trash)"), mcp.Enum("pending", "completed", "canceled", "trashed", "restored")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -948,8 +948,7 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">area_uuid</span></td><td class="param-type">string</td><td>Assign to area</td></tr>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs</td></tr>
       <tr><td><span class="param-name">checklist</span></td><td class="param-type">string</td><td>Comma-separated checklist items</td></tr>
-      <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD (use with reminder_time)</td></tr>
-      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
+      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h, on the scheduled day (needs schedule today, tonight, or YYYY-MM-DD)</td></tr>
     </table>
   </div>
 
@@ -964,8 +963,7 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">deadline</span></td><td class="param-type">string</td><td>YYYY-MM-DD</td></tr>
       <tr><td><span class="param-name">area_uuid</span></td><td class="param-type">string</td><td>Assign to area</td></tr>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs</td></tr>
-      <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD (use with reminder_time)</td></tr>
-      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
+      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h, on the scheduled day (needs schedule today, tonight, or YYYY-MM-DD)</td></tr>
     </table>
   </div>
 
@@ -1022,8 +1020,7 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Move to an active pending project; inactive projects are rejected</td></tr>
       <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Move to an active heading in an active pending project</td></tr>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs; empty string clears them</td></tr>
-      <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear (use with reminder_time)</td></tr>
-      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
+      <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h on the scheduled day, or "none" to remove; scheduling for anytime, someday, or inbox removes it</td></tr>
       <tr><td><span class="param-name">status</span></td><td class="param-type">enum</td><td>pending, completed, canceled, trashed, restored</td></tr>
     </table>
   </div>

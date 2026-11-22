@@ -37,7 +37,7 @@ Before adding or modifying MCP tool definitions, check the [MCP builder skill](h
 
 **Tool handlers** follow: `func (t *ThingsMCP) handle<Name>(ctx, req) (*CallToolResult, error)`. Tool definitions use `mcp.NewTool()` with `mcp.WithString/WithBoolean` params. All registered via `wrap()` which handles user extraction. Exception: `things_diagnose` uses a custom handler with `extractCredentials()` because it needs raw email/password to create a fresh diagnostic client.
 
-**Wire format for writes** uses abbreviated JSON fields (`tt`=title, `nt`=note, `st`=schedule, `dd`=deadline, `sb`=startBucket/evening). Notes require CRC32 checksums: `WireNote{_t: "tx", ch: crc32, v: text, t: 1}`. Use `newTaskUpdate()` builder for constructing updates.
+**Wire format for writes** uses abbreviated JSON fields (`tt`=title, `nt`=note, `st`=schedule, `dd`=deadline, `sb`=startBucket/evening). Notes require CRC32 checksums: `WireNote{_t: "tx", ch: crc32, v: text, t: 1}`. A reminder is `ato` (seconds after midnight) on the scheduled day `sr`; there is no reminder date, and `rmd` (a repeat rule's migration date) is never written. Use `newTaskUpdate()` builder for constructing updates.
 
 **Date handling**: `parseDate()` tries RFC3339 first (e.g. `2025-03-01T00:00:00+08:00`), then falls back to `YYYY-MM-DD` (UTC midnight). Date filters are exclusive (strict `.Before()`/`.After()`). Output uses ISO8601. Zero-value dates (year ≤ 1970) are filtered from output. Schedule/deadline dates are timezone-agnostic (Things stores date-only); `created_*` filters benefit from RFC3339 with timezone since `CreationDate` has full timestamp precision.
 
