@@ -212,6 +212,9 @@ func (s *State) updateTask(item things.TaskActionItem, rawP json.RawMessage) *th
 				}
 			}
 		}
+		if val, ok := rawFields["rp"]; ok {
+			t.ModernRepeater = string(val) != "null"
+		}
 	}
 
 	return t

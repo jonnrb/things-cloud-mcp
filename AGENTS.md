@@ -45,13 +45,13 @@ Synchronization is fail-closed:
 
 Writes continue to use the unofficial Things Cloud endpoint so the server remains remote and multi-user. Preserve these safeguards:
 
-- Validate all item envelopes, UUIDs, relationships, dates, recurrence, and destructive confirmations before POST.
+- Validate all item envelopes, UUIDs, relationships, dates, and destructive confirmations before POST.
 - Active task lists inherit container state: a pending child of a completed, canceled, or trashed heading/project is not active and must not appear in default, Today, Upcoming, overview, or diagnostic active counts. Direct show/project-detail tools may still expose the child's raw status for inspection.
 - Creating or moving a task/heading requires every destination heading/project in its container chain to be pending and outside Trash; reject inactive destinations before POST.
 - A transport failure or malformed response after POST is an uncertain commit. Reconcile by reading the authoritative history; never retry that POST automatically.
 - After a confirmed commit, apply the exact validated events and server head locally so a successful write cannot be reported as a false failure.
-- Recurring creation is a single atomic commit containing a recurrence template and its visible instance.
-- Permanent area, tag, and checklist deletion requires `confirm=true`; stopping recurrence requires `confirm_destructive=true`.
+- Leave repeat rules to the Things apps, which keep a template in step with its instances in ways this server does not. Refuse a `recurrence` argument on create and edit; refuse a status change to an instance whose template repeats after completion (`rr.tp` 1) or can't be read; refuse any edit of a template or of a task with a non-null `rp`.
+- Permanent area, tag, and checklist deletion requires `confirm=true`.
 
 OAuth persistence encrypts Things passwords with AES-GCM and stores refresh-token hashes only. Startup migrates legacy plaintext rows. Never log credentials, response bodies that may contain credentials, encryption keys, or bearer tokens. If encrypted rows exist but the key is missing, startup must fail rather than generate an unrecoverable replacement.
 
@@ -65,9 +65,9 @@ Use `errResult(msg)` for tool errors and `jsonResult(v)` for successful structur
 
 ## Wire format
 
-Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. Recurrence templates must remain hidden from normal read-tool results.
+Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. Recurrence templates must remain hidden from normal read-tool results. A rule's `tp` is 0 for a repeat on a schedule and 1 for one after completion. Things 3.23 and later can keep a rule in `rp` instead, which this server does not read (`Task.ModernRepeater`).
 
-`parseDate()` accepts RFC3339 first and then `YYYY-MM-DD`. Date filters are exclusive. Output dates use ISO 8601 and omit zero-value years. User recurrence strings such as `daily`, `weekly:mon,wed`, `monthly:15`, and `every 3 days` are converted to the Things wire representation; weekly rules use the `wd` bitmask.
+`parseDate()` accepts RFC3339 first and then `YYYY-MM-DD`. Date filters are exclusive. Output dates use ISO 8601 and omit zero-value years.
 
 ## Live validation and deployment
 

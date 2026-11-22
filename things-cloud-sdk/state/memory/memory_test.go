@@ -638,3 +638,31 @@ func TestStateUpdateAppliesNativeNoteDeltas(t *testing.T) {
 		t.Fatalf("UnverifiedNoteEdits = %d after a patch with an unmatched checksum, want 1", s.UnverifiedNoteEdits)
 	}
 }
+
+func TestStateUpdateTracksTheNewerRepeatRule(t *testing.T) {
+	const id = "KXJnBwmWiWyVqd8YKR8wvm"
+	s := NewState()
+	update := func(action things.ItemAction, p string) {
+		t.Helper()
+		if err := s.Update(things.Item{UUID: id, Kind: things.ItemKindTask7, Action: action, P: []byte(p)}); err != nil {
+			t.Fatalf("Update(%s): %v", p, err)
+		}
+	}
+
+	update(things.ItemActionCreated, `{"tt":"Plain","rr":null,"rp":null,"rt":[]}`)
+	if s.Tasks[id].ModernRepeater {
+		t.Fatal("a null rp counted as a repeat rule")
+	}
+	update(things.ItemActionModified, `{"rp":"opaque"}`)
+	if !s.Tasks[id].ModernRepeater {
+		t.Fatal("a non-null rp didn't count as a repeat rule")
+	}
+	update(things.ItemActionModified, `{"tt":"Renamed"}`)
+	if !s.Tasks[id].ModernRepeater {
+		t.Fatal("an edit without rp cleared the repeat rule")
+	}
+	update(things.ItemActionModified, `{"rp":null}`)
+	if s.Tasks[id].ModernRepeater {
+		t.Fatal("rp set to null kept the repeat rule")
+	}
+}

@@ -950,7 +950,6 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">checklist</span></td><td class="param-type">string</td><td>Comma-separated checklist items</td></tr>
       <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD (use with reminder_time)</td></tr>
       <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
-      <tr><td><span class="param-name">recurrence</span></td><td class="param-type">string</td><td>daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days/weeks</td></tr>
     </table>
   </div>
 
@@ -967,7 +966,6 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs</td></tr>
       <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD (use with reminder_time)</td></tr>
       <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
-      <tr><td><span class="param-name">recurrence</span></td><td class="param-type">string</td><td>daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days/weeks</td></tr>
     </table>
   </div>
 
@@ -1012,7 +1010,7 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_edit_item</div>
-    <div class="tool-entry-desc">Edit a task or project (only provided fields change). Completing a recurring task completes only the current instance; stopping recurrence requires explicit confirmation.</div>
+    <div class="tool-entry-desc">Edit a task or project (only provided fields change). A to-do that repeats on a schedule can be completed here; one that repeats after completion is completed in the Things app, where repeats are also set up and changed.</div>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Item UUID</td></tr>
@@ -1026,8 +1024,6 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs; empty string clears them</td></tr>
       <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear (use with reminder_time)</td></tr>
       <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
-      <tr><td><span class="param-name">recurrence</span></td><td class="param-type">string</td><td>daily, weekly, monthly, yearly, etc. Use "none" to clear.</td></tr>
-      <tr><td><span class="param-name">confirm_destructive</span></td><td class="param-type">bool</td><td>Must be true when recurrence is "none"</td></tr>
       <tr><td><span class="param-name">status</span></td><td class="param-type">enum</td><td>pending, completed, canceled, trashed, restored</td></tr>
     </table>
   </div>
@@ -1552,7 +1548,8 @@ var HowItWorksPageHTML = `<!DOCTYPE html>
     <li><span class="cap-dot"></span> Move items to trash</li>
     <li><span class="cap-dot"></span> Serialize each account's sync and write operations to prevent cursor races</li>
     <li><span class="cap-dot"></span> Fail closed on unknown schemas, malformed events, and uncertain commits; never retry an uncertain write</li>
-    <li><span class="cap-dot"></span> Require explicit confirmation for permanent deletions and stopping recurrence</li>
+    <li><span class="cap-dot"></span> Require explicit confirmation for permanent deletions</li>
+    <li><span class="cap-dot"></span> Leave repeat rules, and completing to-dos that repeat after completion, to the Things apps</li>
     <li><span class="cap-dot"></span> All changes sync to your Things apps in real-time via Things Cloud</li>
   </ul>
 </div>
