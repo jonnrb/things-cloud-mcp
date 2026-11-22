@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	// The zone database, so TZ names a zone in an image without one.
+	_ "time/tzdata"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -183,9 +185,26 @@ func nowTs() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
 }
 
+// today is the current calendar day in the server's time zone, which TZ sets
+// to the account owner's, as Things stores a date: midnight UTC on that day.
+// Without TZ the zone is UTC, so in New York "today" would turn into tomorrow
+// at 7 PM, for what the read tools call today and for what the write tools
+// schedule for it.
+func today() time.Time {
+	now := clock()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// clock tells the time for today; tests set it.
+var clock = time.Now
+
 func todayMidnightUTC() int64 {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
+	return today().Unix()
+}
+
+// endOfToday is the last second of today, as Things dates count it.
+func endOfToday() time.Time {
+	return today().Add(24*time.Hour - time.Second)
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +336,21 @@ func parseDate(s string) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// parseDay reads a date to write: YYYY-MM-DD, or an RFC 3339 time, of which
+// only the calendar day in its own offset counts. Things stores a date as
+// midnight UTC on the day, so a write must never carry an hour or an offset.
+func parseDay(s string) *time.Time {
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return &t
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
+	}
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return &day
 }
 
 func parseTime(s string) (int, bool) {
@@ -484,7 +518,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 			st = 0
 		default:
 			// Try parsing as YYYY-MM-DD date
-			if t := parseDate(v); t != nil {
+			if t := parseDay(v); t != nil {
 				ts := t.Unix()
 				sr = &ts
 				tir = &ts
@@ -496,7 +530,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 		nt = textNote(v)
 	}
 	if v, ok := opts["deadline"]; ok {
-		if t := parseDate(v); t != nil {
+		if t := parseDay(v); t != nil {
 			ts := t.Unix()
 			dd = &ts
 		}
@@ -527,7 +561,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 	var ato *int
 	if rmdStr, ok := opts["reminder_date"]; ok {
 		if timeStr, ok2 := opts["reminder_time"]; ok2 {
-			if dt := parseDate(rmdStr); dt != nil {
+			if dt := parseDay(rmdStr); dt != nil {
 				if offset, valid := parseTime(timeStr); valid {
 					ts := dt.Unix()
 					rmd = &ts
@@ -543,7 +577,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 		// Use schedule date as reference for weekday, fall back to today
 		recRef := time.Now()
 		if schedStr, ok := opts["schedule"]; ok {
-			if dt := parseDate(schedStr); dt != nil {
+			if dt := parseDay(schedStr); dt != nil {
 				recRef = *dt
 			}
 		}
@@ -643,7 +677,7 @@ func recurringTemplateForEdit(task *thingscloud.Task, req mcp.CallToolRequest, r
 	if v := req.GetString("deadline", ""); v != "" {
 		if v == "none" {
 			deadline = nil
-		} else if parsed := parseDate(v); parsed != nil {
+		} else if parsed := parseDay(v); parsed != nil {
 			value := parsed.Unix()
 			deadline = &value
 		}
@@ -804,10 +838,11 @@ func scheduleString(st thingscloud.TaskSchedule, scheduledDate *time.Time, start
 	}
 }
 
-// isToday returns true if t falls on today's date (UTC).
+// isToday returns true if t, a Things date, is today.
 func isToday(t time.Time) bool {
-	now := time.Now().UTC()
-	return t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day()
+	day := today()
+	t = t.UTC()
+	return t.Year() == day.Year() && t.Month() == day.Month() && t.Day() == day.Day()
 }
 
 // effectiveScheduledDate returns the date Things uses for the visible
@@ -834,9 +869,7 @@ func isScheduledForTodayOrPast(task *thingscloud.Task) bool {
 	if date == nil {
 		return false
 	}
-	now := time.Now().UTC()
-	todayEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
-	return !date.After(todayEnd)
+	return !date.After(endOfToday())
 }
 
 // taskScheduleString keeps schedule filters and output aligned. Pending tasks
@@ -1754,12 +1787,12 @@ func (t *ThingsMCP) validateOpts(opts map[string]string) error {
 		switch v {
 		case "today", "tonight", "anytime", "someday", "inbox":
 		default:
-			if parseDate(v) == nil {
+			if parseDay(v) == nil {
 				return fmt.Errorf("invalid schedule: %s", v)
 			}
 		}
 	}
-	if v := opts["deadline"]; v != "" && parseDate(v) == nil {
+	if v := opts["deadline"]; v != "" && parseDay(v) == nil {
 		return fmt.Errorf("invalid deadline: %s", v)
 	}
 	reminderDate, hasReminderDate := opts["reminder_date"]
@@ -1768,7 +1801,7 @@ func (t *ThingsMCP) validateOpts(opts map[string]string) error {
 		return fmt.Errorf("reminder_date and reminder_time must be provided together")
 	}
 	if hasReminderDate {
-		if parseDate(reminderDate) == nil {
+		if parseDay(reminderDate) == nil {
 			return fmt.Errorf("invalid reminder_date: %s", reminderDate)
 		}
 		if _, ok := parseTime(reminderTime); !ok {
@@ -3428,8 +3461,7 @@ func (t *ThingsMCP) handleOverview(_ context.Context, req mcp.CallToolRequest) (
 	// --- Today tasks ---
 	todaySet := make(map[string]bool)
 	var todayRaw []*thingscloud.Task
-	now := time.Now().UTC()
-	todayEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
+	todayEnd := endOfToday()
 	cutoff := todayEnd.AddDate(0, 0, lookahead)
 
 	for _, task := range state.Tasks {
@@ -3871,7 +3903,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 			u.Schedule(0, nil, nil).StartBucket(0)
 		default:
 			// Try parsing as YYYY-MM-DD date
-			if dt := parseDate(sched); dt != nil {
+			if dt := parseDay(sched); dt != nil {
 				ts := dt.Unix()
 				u.Schedule(2, ts, ts)
 			} else {
@@ -3882,7 +3914,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	if v := req.GetString("deadline", ""); v != "" {
 		if v == "none" {
 			u.fields["dd"] = nil
-		} else if dt := parseDate(v); dt != nil {
+		} else if dt := parseDay(v); dt != nil {
 			u.Deadline(dt.Unix())
 		} else {
 			return errResult(fmt.Sprintf("invalid deadline: %s", v)), nil
@@ -3914,7 +3946,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 			u.ClearReminder()
 		} else {
 			timeStr := req.GetString("reminder_time", "")
-			dt := parseDate(rmdStr)
+			dt := parseDay(rmdStr)
 			offset, valid := parseTime(timeStr)
 			if dt == nil || !valid {
 				return errResult("valid reminder_date and reminder_time must be provided together"), nil
@@ -3955,7 +3987,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 			// Add or change recurrence
 			recRef := time.Now()
 			if schedStr := req.GetString("schedule", ""); schedStr != "" {
-				if dt := parseDate(schedStr); dt != nil {
+				if dt := parseDay(schedStr); dt != nil {
 					recRef = *dt
 				}
 			} else if editTarget.TodayIndexRefDate != nil {
