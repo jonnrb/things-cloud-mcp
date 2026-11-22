@@ -532,6 +532,7 @@ type TaskOutput struct {
 	DeadlineDate     *string `json:"deadlineDate,omitempty"`
 	ReminderTime     *string `json:"reminderTime,omitempty"`
 	IsRecurring      bool    `json:"isRecurring"`
+	InTrash          bool    `json:"inTrash,omitempty"`
 	CreationDate     *string `json:"creationDate,omitempty"`
 	ModificationDate *string `json:"modificationDate,omitempty"`
 	CompletionDate   *string `json:"completionDate,omitempty"`
@@ -664,6 +665,7 @@ func (t *ThingsMCP) taskToOutput(task *thingscloud.Task) TaskOutput {
 	if len(task.RecurrenceIDs) > 0 || task.Repeater != nil {
 		out.IsRecurring = true
 	}
+	out.InTrash = task.InTrash
 	const isoFormat = "2006-01-02T15:04:05Z"
 	if !task.CreationDate.IsZero() && task.CreationDate.Year() > 1970 {
 		s := task.CreationDate.UTC().Format(isoFormat)
@@ -1664,6 +1666,7 @@ func outputSchemaFor(toolName string) json.RawMessage {
 			"note": stringSchema(), "status": stringSchema(), "schedule": stringSchema(),
 			"scheduledDate": stringSchema(), "deadlineDate": stringSchema(), "reminderTime": stringSchema(),
 			"isRecurring":  map[string]any{"type": "boolean"},
+			"inTrash":      map[string]any{"type": "boolean"},
 			"creationDate": stringSchema(), "modificationDate": stringSchema(), "completionDate": stringSchema(),
 			"areas":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 			"project":   map[string]any{"type": "object"},
@@ -3963,7 +3966,7 @@ func allTools(um *UserManager) []server.ServerTool {
 		},
 		{
 			Tool: mcp.NewTool("things_show_task",
-				mcp.WithDescription("Show full details of a single Things 3 task, including its checklist items. Returns a task object with uuid, title, status, schedule, note, dates, areas, project, tags, and a checklist array (each with uuid, title, status). Accepts a UUID prefix for convenience. Use things_find_tasks to search for tasks and obtain UUIDs."),
+				mcp.WithDescription("Show full details of a single Things 3 task, including its checklist items. Returns a task object with uuid, title, status, schedule, note, dates, areas, project, tags, inTrash (true when it is in the Trash), and a checklist array (each with uuid, title, status). Accepts a UUID prefix for convenience. Use things_find_tasks to search for tasks and obtain UUIDs."),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),

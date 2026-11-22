@@ -10,6 +10,15 @@ func TestRestoringFromTheTrash(t *testing.T) {
 	defer fc.Close()
 	tmcp := newTestThingsMCP(t, fc)
 
+	shown, err := tmcp.handleShowTask(context.Background(), makeReq(map[string]any{"uuid": "task-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNotError(t, shown)
+	if !resultJSON[TaskDetailOutput](t, shown).InTrash {
+		t.Fatal("show_task didn't say the to-do is in the Trash")
+	}
+
 	assertRefused(t, fc, func() (string, bool) {
 		r, err := tmcp.handleEditTask(context.Background(), makeReq(map[string]any{"uuid": "task-1", "title": "Call back"}))
 		if err != nil {
@@ -28,5 +37,12 @@ func TestRestoringFromTheTrash(t *testing.T) {
 	}
 	if tmcp.state.Tasks["task-1"].InTrash {
 		t.Fatal("to-do still in the Trash after restoring")
+	}
+	shown, err = tmcp.handleShowTask(context.Background(), makeReq(map[string]any{"uuid": "task-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultJSON[TaskDetailOutput](t, shown).InTrash {
+		t.Fatal("show_task still says the restored to-do is in the Trash")
 	}
 }
