@@ -3920,23 +3920,25 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 			return errResult(fmt.Sprintf("invalid deadline: %s", v)), nil
 		}
 	}
+	// A to-do in an area, project or heading can't stay in the Inbox, so one
+	// moved out of the Inbox becomes Anytime, as in the Things apps. Anything
+	// else keeps its schedule: a move doesn't take a to-do out of Today or off
+	// its date.
+	moved := false
 	if v := req.GetString("area_uuid", ""); v != "" {
 		u.Area(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
 	}
 	if v := req.GetString("project_uuid", ""); v != "" {
 		u.Project(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
 	}
 	if v := req.GetString("heading_uuid", ""); v != "" {
 		u.Heading(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
+	}
+	if moved && sched == "" && editTarget != nil && editTarget.Schedule == thingscloud.TaskScheduleInbox {
+		u.Schedule(int(thingscloud.TaskScheduleAnytime), nil, nil)
 	}
 	if _, ok := args["tags"]; ok {
 		u.Tags(splitUUIDs(req.GetString("tags", "")))
