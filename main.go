@@ -1250,6 +1250,21 @@ func (t *ThingsMCP) taskMatchesProject(task *thingscloud.Task, projectUUID strin
 	return false
 }
 
+// openToDos counts a project's pending to-dos outside the Trash, leaving out
+// repeat templates, which the Things apps don't show as to-dos.
+func (t *ThingsMCP) openToDos(projectUUID string) int {
+	n := 0
+	for _, task := range t.getState().Tasks {
+		if task.Type != thingscloud.TaskTypeTask || task.Status != thingscloud.TaskStatusPending || task.InTrash || isRecurringTemplate(task) {
+			continue
+		}
+		if t.taskMatchesProject(task, projectUUID) {
+			n++
+		}
+	}
+	return n
+}
+
 // taskMatchesArea checks if a task belongs to an area, either directly
 // via AreaIDs or indirectly via its parent project's AreaIDs.
 func (t *ThingsMCP) taskMatchesArea(task *thingscloud.Task, areaUUID string) bool {
@@ -3674,6 +3689,11 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	if _, ok := args["status"]; ok && editTarget != nil {
 		if err := t.refuseRepeatAfterCompletion(editTarget); err != nil {
 			return errResult(err.Error()), nil
+		}
+	}
+	if status := req.GetString("status", ""); (status == "completed" || status == "canceled") && editTarget != nil && editTarget.Type == thingscloud.TaskTypeProject {
+		if n := t.openToDos(taskUUID); n > 0 {
+			return errResult(fmt.Sprintf("this project still has %d open to-do(s); complete or cancel them first, as the Things apps do when a project is finished", n)), nil
 		}
 	}
 
