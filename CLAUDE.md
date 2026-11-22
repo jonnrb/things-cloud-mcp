@@ -45,6 +45,8 @@ Before adding or modifying MCP tool definitions, check the [MCP builder skill](h
 
 **Error/result helpers**: `errResult(msg)` for errors, `jsonResult(v)` for success. Validation functions (`validateTaskUUID`, `validateOpts`) run before writes.
 
+**History keys are credentials**: Things Cloud serves a history's items and takes commits to it with the key alone, so logs, errors and `things_diagnose` reports (kept and shared by URL) name a history by `thingscloud.HistoryFingerprint(key)`, never the key. The SDK redacts keys from its errors, retry log and `THINGS_DEBUG` dumps.
+
 **Diagnostic helpers**: `diagStepDefs` defines step metadata, `addSkippedSteps(report, fromStep)` marks remaining steps as skipped on failure, `extractCredentials(ctx, um)` resolves email/password from context (shared by `getUserFromContext` and `things_diagnose`). JSON output uses camelCase keys throughout.
 
 ## Live Testing

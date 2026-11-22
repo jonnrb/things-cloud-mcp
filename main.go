@@ -745,9 +745,9 @@ func bestHistory(c *thingscloud.Client) (*thingscloud.History, error) {
 	}
 	full, err := c.History(own.ID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch authoritative history %s: %w", own.ID, err)
+		return nil, fmt.Errorf("fetch authoritative history %s: %w", thingscloud.HistoryFingerprint(own.ID), err)
 	}
-	log.Printf("Authoritative history: %s (serverIndex=%d, schema=%d)", full.ID, full.LatestServerIndex, full.LatestSchemaVersion)
+	log.Printf("Authoritative history: %s (serverIndex=%d, schema=%d)", thingscloud.HistoryFingerprint(full.ID), full.LatestServerIndex, full.LatestSchemaVersion)
 	return full, nil
 }
 
@@ -773,13 +773,13 @@ func NewThingsMCPForUser(email, password string, proxyURL *url.URL) (*ThingsMCP,
 	log.Printf("Fetching history for %s...", email)
 	history, err := c.History(verifyResponse.HistoryKey)
 	if err != nil {
-		return nil, fmt.Errorf("get authoritative history %s: %w", verifyResponse.HistoryKey, err)
+		return nil, fmt.Errorf("get authoritative history %s: %w", thingscloud.HistoryFingerprint(verifyResponse.HistoryKey), err)
 	}
 	t := &ThingsMCP{client: c, history: history, proxyURL: proxyURL, credential: credentialDigest(email, password)}
 	if err := t.fullRebuild(); err != nil {
 		return nil, err
 	}
-	log.Printf("History ready for %s (id=%s, serverIndex=%d).", email, history.ID, history.LatestServerIndex)
+	log.Printf("History ready for %s (id=%s, serverIndex=%d).", email, thingscloud.HistoryFingerprint(history.ID), history.LatestServerIndex)
 
 	return t, nil
 }
@@ -1877,6 +1877,9 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	report := &diagReport{}
 	var allWarnings []string
 	var allErrors []string
+	// The report names histories by fingerprint: a history key alone reads
+	// and writes the history, and reports are kept and shared by URL.
+	fp := thingscloud.HistoryFingerprint
 
 	// Step 1: credential_verification
 	step1 := diagStep{
@@ -1917,11 +1920,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	step1.Status = "pass"
 	step1.Details = map[string]any{
 		"accountStatus": string(verifyResp.Status),
-		"historyKey":    verifyResp.HistoryKey,
+		"historyKey":    fp(verifyResp.HistoryKey),
 		"email":         maskEmail(verifyResp.Email),
 	}
 	step1.Log = append(step1.Log, fmt.Sprintf("Account status: %s", verifyResp.Status))
-	step1.Log = append(step1.Log, fmt.Sprintf("History key from /verify: %s", verifyResp.HistoryKey))
+	step1.Log = append(step1.Log, fmt.Sprintf("History key from /verify: %s", fp(verifyResp.HistoryKey)))
 	report.Steps = append(report.Steps, step1)
 
 	// Step 2: resolve the authoritative history, then enumerate other keys for
@@ -1953,7 +1956,7 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 
 	// Enumerate all histories for the diagnostic report.
 	type historyInfo struct {
-		ID                string `json:"id"`
+		ID                string `json:"id"` // the key's fingerprint
 		LatestServerIndex int    `json:"latestServerIndex"`
 		IsOwnHistory      bool   `json:"isOwnHistory"`
 		Selected          bool   `json:"selected"`
@@ -1975,11 +1978,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	for _, h := range histories {
 		full, ferr := client.History(h.ID)
 		if ferr != nil {
-			step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to fetch metadata: %v", h.ID, ferr))
+			step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to fetch metadata: %v", fp(h.ID), ferr))
 			continue
 		}
 		hi := historyInfo{
-			ID:                full.ID,
+			ID:                fp(full.ID),
 			LatestServerIndex: full.LatestServerIndex,
 			IsOwnHistory:      full.ID == ownHistoryID,
 			Selected:          full.ID == history.ID,
@@ -2015,11 +2018,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 					hi.NewestItemDate = newestDate.Format("2006-01-02")
 				}
 			} else {
-				step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to peek items: %v", full.ID, ierr))
+				step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to peek items: %v", fp(full.ID), ierr))
 			}
 		}
 		allHistories = append(allHistories, hi)
-		logLine := fmt.Sprintf("History %s: serverIndex=%d, isOwnHistory=%v, selected=%v", full.ID, hi.LatestServerIndex, hi.IsOwnHistory, hi.Selected)
+		logLine := fmt.Sprintf("History %s: serverIndex=%d, isOwnHistory=%v, selected=%v", fp(full.ID), hi.LatestServerIndex, hi.IsOwnHistory, hi.Selected)
 		if hi.NewestItemDate != "" {
 			logLine += fmt.Sprintf(", newestItemDate=%s", hi.NewestItemDate)
 		}
@@ -2028,7 +2031,7 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 
 	// Check if account history key appears in own-history-keys list
 	if len(histories) > 0 && !ownKeyFound {
-		w := fmt.Sprintf("Account history key (%s) not found in own-history-keys list", ownHistoryID)
+		w := fmt.Sprintf("Account history key (%s) not found in own-history-keys list", fp(ownHistoryID))
 		step2.Log = append(step2.Log, fmt.Sprintf("Warning: %s", w))
 		allWarnings = append(allWarnings, fmt.Sprintf("Step 2: %s", w))
 	}
@@ -2051,17 +2054,17 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	step2.Status = "pass"
 	step2.Details = map[string]any{
 		"historyCount":            len(histories),
-		"selectedHistory":         history.ID,
+		"selectedHistory":         fp(history.ID),
 		"selectedServerIndexMeta": selectedServerIndex,
-		"ownHistoryKey":           ownHistoryID,
+		"ownHistoryKey":           fp(ownHistoryID),
 		"selectedIsSameAsOwn":     history.ID == ownHistoryID,
 		"allHistories":            allHistories,
 	}
 	if history.ID != ownHistoryID && len(histories) > 1 {
-		step2.Log = append(step2.Log, fmt.Sprintf("WARNING: Selected history %s differs from OwnHistory %s — account may have multiple sync streams", history.ID, ownHistoryID))
+		step2.Log = append(step2.Log, fmt.Sprintf("WARNING: Selected history %s differs from OwnHistory %s — account may have multiple sync streams", fp(history.ID), fp(ownHistoryID)))
 		allWarnings = append(allWarnings, "Selected history differs from OwnHistory — multi-device account detected")
 	}
-	step2.Log = append(step2.Log, fmt.Sprintf("Selected history: %s (serverIndex=%d)", history.ID, history.LatestServerIndex))
+	step2.Log = append(step2.Log, fmt.Sprintf("Selected history: %s (serverIndex=%d)", fp(history.ID), history.LatestServerIndex))
 	report.Steps = append(report.Steps, step2)
 
 	// Step 3: sync_history

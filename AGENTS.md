@@ -25,7 +25,7 @@ Environment variables:
 - `READ_ONLY`: `true` registers only the read tools and refuses every write.
 - `WRITE_TOOLS`: comma-separated write tools to register alongside the read tools, such as `things_create_task,things_edit_item`; unset registers them all. A name that isn't a write tool, or setting it with `READ_ONLY`, stops the server at startup.
 - `TZ`: IANA time zone whose calendar day is "today" for schedules and Today lists (for example `America/New_York`); UTC when unset. The binary embeds the zone database.
-- `THINGS_DEBUG`: SDK debug logging.
+- `THINGS_DEBUG`: SDK debug logging, which still logs the bodies of a history's calls (to-dos and their notes).
 
 ## Architecture and safety invariants
 
@@ -57,7 +57,7 @@ Writes continue to use the unofficial Things Cloud endpoint so the server remain
 - Leave repeat rules to the Things apps, which keep a template in step with its instances in ways this server does not. Refuse a `recurrence` argument on create and edit; refuse a status change to an instance whose template repeats after completion (`rr.tp` 1) or can't be read; refuse any edit of a template or of a task with a non-null `rp`.
 - Permanent area, tag, and checklist deletion requires `confirm=true`.
 
-OAuth persistence encrypts Things passwords with AES-GCM and stores refresh-token hashes only. Startup migrates legacy plaintext rows. Never log credentials, response bodies that may contain credentials, encryption keys, or bearer tokens. If encrypted rows exist but the key is missing, startup must fail rather than generate an unrecoverable replacement.
+OAuth persistence encrypts Things passwords with AES-GCM and stores refresh-token hashes only. Startup migrates legacy plaintext rows. Never log credentials, response bodies that may contain credentials, encryption keys, or bearer tokens. A Things Cloud history key is a bearer token: Things Cloud serves a history's items and takes commits to it with the key alone, no password. Name a history by `thingscloud.HistoryFingerprint(key)` in logs, errors and diagnoses (diagnoses are kept and shared by URL); the SDK redacts keys from its errors and retry log, and `THINGS_DEBUG` dumps leave out the Authorization header and every body outside a history. If encrypted rows exist but the key is missing, startup must fail rather than generate an unrecoverable replacement.
 
 ## MCP tools
 
