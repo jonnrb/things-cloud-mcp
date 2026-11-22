@@ -3916,7 +3916,13 @@ func (t *ThingsMCP) handleDeleteChecklistItem(_ context.Context, req mcp.CallToo
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
+// defineTools returns the tools um's policy registers.
 func defineTools(um *UserManager) []server.ServerTool {
+	return um.policy.filterTools(allTools(um))
+}
+
+// allTools returns every tool, whatever the policy.
+func allTools(um *UserManager) []server.ServerTool {
 	// wrap creates a handler closure that extracts ThingsMCP from context via UserManager.
 	wrap := func(fn func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error)) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -4312,15 +4318,6 @@ func defineTools(um *UserManager) []server.ServerTool {
 	for i := range tools {
 		tools[i].Tool.RawOutputSchema = outputSchemaFor(tools[i].Tool.Name)
 	}
-	if um.policy.readOnly {
-		readOnlyTools := tools[:0]
-		for _, tool := range tools {
-			if hint := tool.Tool.Annotations.ReadOnlyHint; hint != nil && *hint {
-				readOnlyTools = append(readOnlyTools, tool)
-			}
-		}
-		tools = readOnlyTools
-	}
 	return tools
 }
 
@@ -4351,6 +4348,17 @@ func main() {
 	}
 	if um.policy.readOnly {
 		log.Printf("READ_ONLY: write tools disabled")
+	}
+	if err := um.policy.checkTools(allTools(um)); err != nil {
+		log.Fatalf("%v", err)
+	}
+	if um.policy.writeTools != nil {
+		var names []string
+		for name := range um.policy.writeTools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		log.Printf("WRITE_TOOLS: only %s", strings.Join(names, ", "))
 	}
 
 	single, err := loadSingleUser()

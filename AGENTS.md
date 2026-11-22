@@ -21,6 +21,10 @@ Environment variables:
 - `DATA_DIR`: SQLite and credential-key directory (default `data/`).
 - `JWT_SECRET`: base64 JWT signing key; generated when absent.
 - `CREDENTIALS_SECRET`: durable high-entropy secret used to derive the AES key for Things passwords at rest. When absent, the server creates `DATA_DIR/credentials.key` with mode `0600`.
+- `ALLOWED_EMAILS`: comma-separated Things Cloud accounts that may sign in; any other is refused before its credentials reach Things Cloud.
+- `READ_ONLY`: `true` registers only the read tools and refuses every write.
+- `WRITE_TOOLS`: comma-separated write tools to register alongside the read tools, such as `things_create_task,things_edit_item`; unset registers them all. A name that isn't a write tool, or setting it with `READ_ONLY`, stops the server at startup.
+- `TZ`: IANA time zone whose calendar day is "today" for schedules and Today lists (for example `America/New_York`); UTC when unset. The binary embeds the zone database.
 - `THINGS_DEBUG`: SDK debug logging.
 
 ## Architecture and safety invariants

@@ -35,6 +35,8 @@ The server makes `DATA_DIR` private to itself (mode `0700`). When it can't, beca
 
 Behind something else that signs people in, such as an MCP proxy with its own OAuth, set `THINGS_EMAIL` and `THINGS_PASSWORD` to one Things Cloud account. Every request then acts as that account, with or without an `Authorization` header. The server serves no OAuth endpoints and keeps nothing in `DATA_DIR`. Since whoever reaches it acts as the account, it listens only on `127.0.0.1` unless `HOST` names another address. `ALLOWED_EMAILS` and `READ_ONLY` still apply, so the server refuses to start with an account outside `ALLOWED_EMAILS`.
 
+To offer only some write tools, list them in `WRITE_TOOLS`, such as `things_create_task,things_edit_item`; the read tools are always offered. Set `TZ` to the account's time zone, such as `America/New_York`, so that "today" is the day there rather than in UTC.
+
 ### Deploy to Fly.io
 
 The included `Dockerfile` stores OAuth state and generated keys under `/data`. To deploy on [Fly.io](https://fly.io), create a `fly.toml` for the app and mount the volume at `/data`:

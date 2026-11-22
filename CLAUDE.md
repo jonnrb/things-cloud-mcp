@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 No linter configured. Run tests with `/usr/local/go/bin/go test ./...`. Verify build with `go build ./...`.
 
-Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging).
+Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging), `TZ` (zone whose day is "today", UTC if unset), `READ_ONLY` (read tools only), `WRITE_TOOLS` (comma-separated write tools to offer; unset offers all). See AGENTS.md for the rest.
 
 ## Architecture
 
