@@ -3647,7 +3647,11 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	}
 
 	if err := t.validateTaskUUID(taskUUID); err != nil {
-		return errResult(err.Error()), nil
+		// validateTaskUUID leaves out the Trash, from which an item can
+		// only be restored.
+		if target := t.findTask(taskUUID); target == nil || !target.InTrash || req.GetString("status", "") != "restored" {
+			return errResult(err.Error()), nil
+		}
 	}
 
 	editTarget := t.findTask(taskUUID)
