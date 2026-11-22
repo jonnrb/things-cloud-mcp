@@ -596,3 +596,45 @@ func TestStateUpdateRejectsMalformedTask7(t *testing.T) {
 		t.Fatalf("state changed after malformed Task7 payload: %#v", s.Tasks)
 	}
 }
+
+func TestStateUpdateAppliesNativeNoteDeltas(t *testing.T) {
+	const id = "KXJnBwmWiWyVqd8YKR8wvm"
+	s := NewState()
+	err := s.Update(
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask7,
+			Action: things.ItemActionCreated,
+			P:      []byte(`{"tt":"Native task","nt":{"_t":"tx","t":1,"ch":4002128608,"v":"Native Task7 note α 🚀\nSecond line."}}`),
+		},
+		// What Things 3.23.3 wrote when "Second" was edited to "Updated".
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask7,
+			Action: things.ItemActionModified,
+			P:      []byte(`{"nt":{"_t":"tx","t":2,"ps":[{"r":"Update","p":26,"l":5,"ch":3672733299}]}}`),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got, want := s.Tasks[id].Note, "Native Task7 note α 🚀\nUpdated line."; got != want {
+		t.Fatalf("note = %q, want %q", got, want)
+	}
+	if s.UnverifiedNoteEdits != 0 {
+		t.Fatalf("UnverifiedNoteEdits = %d, want 0", s.UnverifiedNoteEdits)
+	}
+
+	err = s.Update(things.Item{
+		UUID:   id,
+		Kind:   things.ItemKindTask7,
+		Action: things.ItemActionModified,
+		P:      []byte(`{"nt":{"_t":"tx","t":2,"ps":[{"r":"!","p":0,"l":0,"ch":1}]}}`),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if s.UnverifiedNoteEdits != 1 {
+		t.Fatalf("UnverifiedNoteEdits = %d after a patch with an unmatched checksum, want 1", s.UnverifiedNoteEdits)
+	}
+}

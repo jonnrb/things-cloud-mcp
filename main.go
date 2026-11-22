@@ -1208,7 +1208,16 @@ func (t *ThingsMCP) fullRebuild() error {
 
 	log.Printf("Full rebuild: %d tasks, %d areas, %d tags",
 		len(state.Tasks), len(state.Areas), len(state.Tags))
+	logUnverifiedNoteEdits(state.UnverifiedNoteEdits)
 	return nil
+}
+
+// logUnverifiedNoteEdits logs note edits whose checksum no reading of their
+// offsets produced, whose notes may differ from the ones the Things apps show.
+func logUnverifiedNoteEdits(n int) {
+	if n > 0 {
+		log.Printf("%d note edit(s) matched no checksum; those notes may differ from the Things apps'", n)
+	}
 }
 
 func cloneHistoryCursor(h *thingscloud.History) *thingscloud.History {
@@ -1250,14 +1259,17 @@ func (t *ThingsMCP) incrementalSync() ([]thingscloud.Item, error) {
 	}
 
 	t.mu.Lock()
+	unverified := t.state.UnverifiedNoteEdits
 	if err := t.state.Update(delta...); err != nil {
 		t.mu.Unlock()
 		return nil, fmt.Errorf("apply incremental state: %w", err)
 	}
+	unverified = t.state.UnverifiedNoteEdits - unverified
 	t.history = candidateHistory
 	t.mu.Unlock()
 
 	log.Printf("Incremental sync: applied %d new items", len(delta))
+	logUnverifiedNoteEdits(unverified)
 	return delta, nil
 }
 
