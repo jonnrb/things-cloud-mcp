@@ -1381,19 +1381,21 @@ func isRecurringTemplate(task *thingscloud.Task) bool {
 	return task.Repeater != nil
 }
 
-// The write tools leave repeating to-dos to the Things apps. Things 3.23 moved
-// tasks to Task7, and arthursoares/things-cloud-sdk found on a disposable
-// account that the apps keep a repeat's template in step with its to-dos in
-// ways this server doesn't: completing a to-do that repeats after completion,
-// for one, also moves its template's next date. Writing a repeat rule, or
-// completing such a to-do, here could leave a repeat that never comes back or
-// comes back at the wrong time, so the tools refuse both. They also leave alone
-// a to-do with a repeat rule in the newer rp format, which this server can't
-// read.
+// The write tools leave repeating to-dos to the Things apps. A repeat is a
+// hidden template holding the rule (rr), and the apps keep it in step with its
+// to-dos in ways this server doesn't: completing one of them also moves the
+// template's next date (tir, icsd) and count (icc), and for a repeat after
+// completion records the completion date (acrd), from which the next date
+// follows. arthursoares/things-cloud-sdk found this on a disposable account,
+// and a real account's history showed the same. Writing a repeat rule, or
+// completing a to-do that repeats after completion, here could leave a repeat
+// that never comes back or comes back at the wrong time, so the tools refuse
+// both. They also leave alone a to-do with a non-null rp: the apps write rp as
+// null, and this server can't read a rule kept there.
 var (
-	errRecurrence             = errors.New("repeating to-dos can't be set up or changed here, since Things 3.23 changed how they're stored; set the repeat in the Things app")
+	errRecurrence             = errors.New("repeating to-dos can't be set up or changed here yet; set the repeat in the Things app")
 	errRepeatsAfterCompletion = errors.New("this to-do repeats after completion, and completing it in the Things app is what schedules the next one; complete it there")
-	errModernRepeater         = errors.New("this to-do has a repeat rule in a newer format this server can't read; change it in the Things app")
+	errModernRepeater         = errors.New("this to-do has a repeat rule in a format this server can't read; change it in the Things app")
 )
 
 // refuseRecurrence refuses a write that names a repeat rule.

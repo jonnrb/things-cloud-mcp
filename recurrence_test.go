@@ -198,5 +198,5 @@ func TestToDoWithANewerRepeatRuleIsNotEdited(t *testing.T) {
 			t.Fatal(err)
 		}
 		return resultText(t, r), r.IsError
-	}, "newer format")
+	}, "format this server can't read")
 }
