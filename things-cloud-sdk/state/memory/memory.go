@@ -18,6 +18,12 @@ type State struct {
 	Tasks          map[string]*things.Task
 	Tags           map[string]*things.Tag
 	CheckListItems map[string]*things.CheckListItem
+
+	// UnverifiedNoteEdits counts the note deltas applied so far with a patch
+	// whose checksum no reading of its offsets produced (see
+	// things.ApplyPatchesVerified). Such a note may differ from the one the
+	// Things apps show.
+	UnverifiedNoteEdits int
 }
 
 // NewState creates a new, empty state
@@ -140,7 +146,11 @@ func (s *State) updateTask(item things.TaskActionItem, rawP json.RawMessage) *th
 				case things.NoteTypeFullText:
 					t.Note = note.Value
 				case things.NoteTypeDelta:
-					t.Note = things.ApplyPatches(t.Note, note.Patches)
+					var verified bool
+					t.Note, verified = things.ApplyPatchesVerified(t.Note, note.Patches)
+					if !verified {
+						s.UnverifiedNoteEdits++
+					}
 				}
 			}
 		}
@@ -201,6 +211,9 @@ func (s *State) updateTask(item things.TaskActionItem, rawP json.RawMessage) *th
 					t.Repeater = nil
 				}
 			}
+		}
+		if val, ok := rawFields["rp"]; ok {
+			t.ModernRepeater = string(val) != "null"
 		}
 	}
 

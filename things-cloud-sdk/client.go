@@ -187,26 +187,34 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Things-Client-Info", base64.StdEncoding.EncodeToString(ciJSON))
 
 	if c.Debug {
-		bs, _ := httputil.DumpRequest(req, true)
-		log.Println("REQUEST:", string(bs))
+		bs, _ := httputil.DumpRequest(req, dumpsBody(req))
+		log.Println("REQUEST:", redactDump(bs))
 	}
 
 	for attempt := 0; ; attempt++ {
 		resp, err := c.client.Do(req)
 		if c.Debug {
 			if err == nil {
-				bs, _ := httputil.DumpResponse(resp, true)
-				log.Println("RESPONSE:", string(bs))
+				bs, _ := httputil.DumpResponse(resp, dumpsBody(req))
+				log.Println("RESPONSE:", redactDump(bs))
 			}
 			log.Println()
 		}
-		if err != nil || !shouldRetryRead(req, resp, attempt) {
+		if err != nil {
+			// The error quotes the URL, and with it any history key.
+			var uerr *url.Error
+			if errors.As(err, &uerr) {
+				uerr.URL = RedactHistoryKeys(uerr.URL)
+			}
 			return resp, err
+		}
+		if !shouldRetryRead(req, resp, attempt) {
+			return resp, nil
 		}
 		wait := retryDelay(resp, attempt)
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		log.Printf("things cloud: %s on %s %s, retrying in %s", resp.Status, req.Method, req.URL.Path, wait)
+		log.Printf("things cloud: %s on %s %s, retrying in %s", resp.Status, req.Method, RedactHistoryKeys(req.URL.Path), wait)
 		timer := time.NewTimer(wait)
 		select {
 		case <-req.Context().Done():

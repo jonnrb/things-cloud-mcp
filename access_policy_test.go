@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,53 @@ func TestReadOnlyRefusesWrites(t *testing.T) {
 	tm := &ThingsMCP{readOnly: true}
 	if err := tm.writeAndSync(); err != errReadOnly {
 		t.Fatalf("writeAndSync in read-only mode = %v, want errReadOnly", err)
+	}
+}
+
+func TestWriteToolsRegistersOnlyTheNamedWriteTools(t *testing.T) {
+	um := NewUserManager()
+	um.policy.writeTools = parseWriteTools(" things_create_task, things_edit_item ,")
+	if err := um.policy.checkTools(allTools(um)); err != nil {
+		t.Fatalf("checkTools: %v", err)
+	}
+	reads, writes := 0, map[string]bool{}
+	for _, tool := range defineTools(um) {
+		if isReadTool(tool) {
+			reads++
+		} else {
+			writes[tool.Tool.Name] = true
+		}
+	}
+	if len(writes) != 2 || !writes["things_create_task"] || !writes["things_edit_item"] {
+		t.Fatalf("write tools registered: %v", writes)
+	}
+	readOnly := NewUserManager()
+	readOnly.policy = newAccessPolicy("", "true")
+	if want := len(defineTools(readOnly)); reads != want {
+		t.Fatalf("%d read tools registered, want all %d", reads, want)
+	}
+}
+
+func TestWriteToolsMustNameWriteTools(t *testing.T) {
+	um := NewUserManager()
+	tools := allTools(um)
+	for _, tt := range []struct {
+		policy accessPolicy
+		want   string
+	}{
+		{accessPolicy{writeTools: parseWriteTools("things_create_task,things_create_taks")}, "things_create_taks, which isn't a write tool"},
+		{accessPolicy{writeTools: parseWriteTools("things_find_tasks")}, "things_find_tasks, which isn't a write tool"},
+		{accessPolicy{readOnly: true, writeTools: parseWriteTools("things_create_task")}, "can't both be set"},
+	} {
+		err := tt.policy.checkTools(tools)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("checkTools(%v) = %v, want %q", tt.policy.writeTools, err, tt.want)
+		}
+	}
+	if parseWriteTools(" , ") != nil {
+		t.Error("a blank WRITE_TOOLS should register every write tool")
+	}
+	if err := (accessPolicy{}).checkTools(tools); err != nil {
+		t.Errorf("no WRITE_TOOLS: %v", err)
 	}
 }

@@ -252,6 +252,10 @@ type Task struct {
 	RecurrenceIDs   []string
 	DelegateIDs     []string
 	Repeater        *RepeaterConfiguration
+	// ModernRepeater reports a non-null rp, a field the apps write as null.
+	// They keep a repeat rule in rr; a rule in rp is one this package can't
+	// read.
+	ModernRepeater bool
 }
 
 // TaskActionItemPayload describes the payload for modifying Tasks, and also Projects,

@@ -21,7 +21,11 @@ Environment variables:
 - `DATA_DIR`: SQLite and credential-key directory (default `data/`).
 - `JWT_SECRET`: base64 JWT signing key; generated when absent.
 - `CREDENTIALS_SECRET`: durable high-entropy secret used to derive the AES key for Things passwords at rest. When absent, the server creates `DATA_DIR/credentials.key` with mode `0600`.
-- `THINGS_DEBUG`: SDK debug logging.
+- `ALLOWED_EMAILS`: comma-separated Things Cloud accounts that may sign in; any other is refused before its credentials reach Things Cloud.
+- `READ_ONLY`: `true` registers only the read tools and refuses every write.
+- `WRITE_TOOLS`: comma-separated write tools to register alongside the read tools, such as `things_create_task,things_edit_item`; unset registers them all. A name that isn't a write tool, or setting it with `READ_ONLY`, stops the server at startup.
+- `TZ`: IANA time zone whose calendar day is "today" for schedules and Today lists (for example `America/New_York`); UTC when unset. The binary embeds the zone database.
+- `THINGS_DEBUG`: SDK debug logging, which still logs the bodies of a history's calls (to-dos and their notes).
 
 ## Architecture and safety invariants
 
@@ -45,15 +49,15 @@ Synchronization is fail-closed:
 
 Writes continue to use the unofficial Things Cloud endpoint so the server remains remote and multi-user. Preserve these safeguards:
 
-- Validate all item envelopes, UUIDs, relationships, dates, recurrence, and destructive confirmations before POST.
+- Validate all item envelopes, UUIDs, relationships, dates, and destructive confirmations before POST.
 - Active task lists inherit container state: a pending child of a completed, canceled, or trashed heading/project is not active and must not appear in default, Today, Upcoming, overview, or diagnostic active counts. Direct show/project-detail tools may still expose the child's raw status for inspection.
 - Creating or moving a task/heading requires every destination heading/project in its container chain to be pending and outside Trash; reject inactive destinations before POST.
 - A transport failure or malformed response after POST is an uncertain commit. Reconcile by reading the authoritative history; never retry that POST automatically.
 - After a confirmed commit, apply the exact validated events and server head locally so a successful write cannot be reported as a false failure.
-- Recurring creation is a single atomic commit containing a recurrence template and its visible instance.
-- Permanent area, tag, and checklist deletion requires `confirm=true`; stopping recurrence requires `confirm_destructive=true`.
+- Leave repeat rules to the Things apps, which keep a template in step with its instances in ways this server does not. Refuse a `recurrence` argument on create and edit; refuse a status change to an instance whose template repeats after completion (`rr.tp` 1) or can't be read; refuse any edit of a template or of a task with a non-null `rp`.
+- Permanent area, tag, and checklist deletion requires `confirm=true`.
 
-OAuth persistence encrypts Things passwords with AES-GCM and stores refresh-token hashes only. Startup migrates legacy plaintext rows. Never log credentials, response bodies that may contain credentials, encryption keys, or bearer tokens. If encrypted rows exist but the key is missing, startup must fail rather than generate an unrecoverable replacement.
+OAuth persistence encrypts Things passwords with AES-GCM and stores refresh-token hashes only. Startup migrates legacy plaintext rows. Never log credentials, response bodies that may contain credentials, encryption keys, or bearer tokens. A Things Cloud history key is a bearer token: Things Cloud serves a history's items and takes commits to it with the key alone, no password. Name a history by `thingscloud.HistoryFingerprint(key)` in logs, errors and diagnoses (diagnoses are kept and shared by URL); the SDK redacts keys from its errors and retry log, and `THINGS_DEBUG` dumps leave out the Authorization header and every body outside a history. If encrypted rows exist but the key is missing, startup must fail rather than generate an unrecoverable replacement.
 
 ## MCP tools
 
@@ -65,9 +69,9 @@ Use `errResult(msg)` for tool errors and `jsonResult(v)` for successful structur
 
 ## Wire format
 
-Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. Recurrence templates must remain hidden from normal read-tool results.
+Writes use abbreviated fields such as `tt`, `nt`, `st`, `dd`, and `sb`. Notes require CRC32 metadata. Date-only schedule and deadline fields are timezone-agnostic. Recurrence uses template-plus-instance entities: templates hold `rr` and `icsd`; visible instances hold `rt` referencing the template. A reminder is `ato`, seconds after midnight of the scheduled day `sr`; Things has no reminder date (`rmd` is a repeat rule's migration date, so never write it), so a reminder needs a scheduled day and goes when the task loses its day. Recurrence templates must remain hidden from normal read-tool results. A rule's `tp` is 0 for a repeat on a schedule and 1 for one after completion. The apps make each occurrence's to-do on its day, moving the template's next date (`tir`, `icsd`) and count (`icc`), and completing an occurrence before its to-do exists does the same. Completing, canceling, reopening, trashing or moving an existing to-do writes only that to-do, unless it repeats after completion: then a status change also writes the template's `acrd` (the completion date) and `tir` (the next date, which follows from `acrd`). The apps write `rp` as null; a task with a non-null `rp` holds a rule this server does not read and is left alone (`Task.ModernRepeater`).
 
-`parseDate()` accepts RFC3339 first and then `YYYY-MM-DD`. Date filters are exclusive. Output dates use ISO 8601 and omit zero-value years. User recurrence strings such as `daily`, `weekly:mon,wed`, `monthly:15`, and `every 3 days` are converted to the Things wire representation; weekly rules use the `wd` bitmask.
+`parseDate()` accepts RFC3339 first and then `YYYY-MM-DD`. Date filters are exclusive. Output dates use ISO 8601 and omit zero-value years.
 
 ## Live validation and deployment
 

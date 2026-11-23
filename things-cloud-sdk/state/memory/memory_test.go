@@ -596,3 +596,73 @@ func TestStateUpdateRejectsMalformedTask7(t *testing.T) {
 		t.Fatalf("state changed after malformed Task7 payload: %#v", s.Tasks)
 	}
 }
+
+func TestStateUpdateAppliesNativeNoteDeltas(t *testing.T) {
+	const id = "KXJnBwmWiWyVqd8YKR8wvm"
+	s := NewState()
+	err := s.Update(
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask7,
+			Action: things.ItemActionCreated,
+			P:      []byte(`{"tt":"Native task","nt":{"_t":"tx","t":1,"ch":4002128608,"v":"Native Task7 note α 🚀\nSecond line."}}`),
+		},
+		// What Things 3.23.3 wrote when "Second" was edited to "Updated".
+		things.Item{
+			UUID:   id,
+			Kind:   things.ItemKindTask7,
+			Action: things.ItemActionModified,
+			P:      []byte(`{"nt":{"_t":"tx","t":2,"ps":[{"r":"Update","p":26,"l":5,"ch":3672733299}]}}`),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got, want := s.Tasks[id].Note, "Native Task7 note α 🚀\nUpdated line."; got != want {
+		t.Fatalf("note = %q, want %q", got, want)
+	}
+	if s.UnverifiedNoteEdits != 0 {
+		t.Fatalf("UnverifiedNoteEdits = %d, want 0", s.UnverifiedNoteEdits)
+	}
+
+	err = s.Update(things.Item{
+		UUID:   id,
+		Kind:   things.ItemKindTask7,
+		Action: things.ItemActionModified,
+		P:      []byte(`{"nt":{"_t":"tx","t":2,"ps":[{"r":"!","p":0,"l":0,"ch":1}]}}`),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if s.UnverifiedNoteEdits != 1 {
+		t.Fatalf("UnverifiedNoteEdits = %d after a patch with an unmatched checksum, want 1", s.UnverifiedNoteEdits)
+	}
+}
+
+func TestStateUpdateTracksTheNewerRepeatRule(t *testing.T) {
+	const id = "KXJnBwmWiWyVqd8YKR8wvm"
+	s := NewState()
+	update := func(action things.ItemAction, p string) {
+		t.Helper()
+		if err := s.Update(things.Item{UUID: id, Kind: things.ItemKindTask7, Action: action, P: []byte(p)}); err != nil {
+			t.Fatalf("Update(%s): %v", p, err)
+		}
+	}
+
+	update(things.ItemActionCreated, `{"tt":"Plain","rr":null,"rp":null,"rt":[]}`)
+	if s.Tasks[id].ModernRepeater {
+		t.Fatal("a null rp counted as a repeat rule")
+	}
+	update(things.ItemActionModified, `{"rp":"opaque"}`)
+	if !s.Tasks[id].ModernRepeater {
+		t.Fatal("a non-null rp didn't count as a repeat rule")
+	}
+	update(things.ItemActionModified, `{"tt":"Renamed"}`)
+	if !s.Tasks[id].ModernRepeater {
+		t.Fatal("an edit without rp cleared the repeat rule")
+	}
+	update(things.ItemActionModified, `{"rp":null}`)
+	if s.Tasks[id].ModernRepeater {
+		t.Fatal("rp set to null kept the repeat rule")
+	}
+}

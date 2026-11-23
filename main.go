@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	// The zone database, so TZ names a zone in an image without one.
+	_ "time/tzdata"
 
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -183,129 +185,26 @@ func nowTs() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
 }
 
+// today is the current calendar day in the server's time zone, which TZ sets
+// to the account owner's, as Things stores a date: midnight UTC on that day.
+// Without TZ the zone is UTC, so in New York "today" would turn into tomorrow
+// at 7 PM, for what the read tools call today and for what the write tools
+// schedule for it.
+func today() time.Time {
+	now := clock()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// clock tells the time for today; tests set it.
+var clock = time.Now
+
 func todayMidnightUTC() int64 {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
+	return today().Unix()
 }
 
-// ---------------------------------------------------------------------------
-// Recurrence parser: user-friendly string → wire-format JSON
-// ---------------------------------------------------------------------------
-
-func parseRecurrence(s string, refDate time.Time) (*json.RawMessage, error) {
-	s = strings.TrimSpace(strings.ToLower(s))
-	if s == "" || s == "none" {
-		return nil, nil
-	}
-
-	ref := time.Date(refDate.Year(), refDate.Month(), refDate.Day(), 0, 0, 0, 0, time.UTC).Unix()
-	base := map[string]any{
-		"rrv": 4,
-		"tp":  0,
-		"rc":  0,
-		"ts":  0,
-		"ed":  64092211200,
-		"ia":  ref,
-		"sr":  ref,
-	}
-
-	switch {
-	case s == "daily":
-		base["fu"] = 16
-		base["fa"] = 1
-		base["of"] = []map[string]any{{"dy": 0}}
-
-	case strings.HasPrefix(s, "every ") && strings.HasSuffix(s, " days"):
-		numStr := strings.TrimSuffix(strings.TrimPrefix(s, "every "), " days")
-		n, err := strconv.Atoi(numStr)
-		if err != nil || n < 1 {
-			return nil, fmt.Errorf("invalid recurrence: %s", s)
-		}
-		base["fu"] = 16
-		base["fa"] = n
-		base["of"] = []map[string]any{{"dy": 0}}
-
-	case s == "weekly":
-		base["fu"] = 256
-		base["fa"] = 1
-		base["of"] = []map[string]any{{"wd": int(refDate.Weekday())}}
-
-	case strings.HasPrefix(s, "weekly:"):
-		dayStr := strings.TrimPrefix(s, "weekly:")
-		days, err := parseWeekdays(dayStr)
-		if err != nil {
-			return nil, err
-		}
-		base["fu"] = 256
-		base["fa"] = 1
-		base["of"] = days
-
-	case strings.HasPrefix(s, "every ") && strings.HasSuffix(s, " weeks"):
-		numStr := strings.TrimSuffix(strings.TrimPrefix(s, "every "), " weeks")
-		n, err := strconv.Atoi(numStr)
-		if err != nil || n < 1 {
-			return nil, fmt.Errorf("invalid recurrence: %s", s)
-		}
-		base["fu"] = 256
-		base["fa"] = n
-		base["of"] = []map[string]any{{"wd": int(refDate.Weekday())}}
-
-	case s == "monthly":
-		base["fu"] = 8
-		base["fa"] = 1
-		base["of"] = []map[string]any{{"dy": 0}}
-
-	case strings.HasPrefix(s, "monthly:"):
-		detail := strings.TrimPrefix(s, "monthly:")
-		if detail == "last" {
-			base["fu"] = 8
-			base["fa"] = 1
-			base["of"] = []map[string]any{{"dy": -1}}
-		} else {
-			day, err := strconv.Atoi(detail)
-			if err != nil || day < 1 || day > 31 {
-				return nil, fmt.Errorf("invalid monthly day: %s", detail)
-			}
-			base["fu"] = 8
-			base["fa"] = 1
-			base["of"] = []map[string]any{{"dy": day - 1}}
-		}
-
-	case s == "yearly":
-		base["fu"] = 4
-		base["fa"] = 1
-		base["of"] = []map[string]any{{"dy": 0, "mo": 0}}
-
-	default:
-		return nil, fmt.Errorf("unsupported recurrence format: %s (try: daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days, every N weeks)", s)
-	}
-
-	raw, err := json.Marshal(base)
-	if err != nil {
-		return nil, err
-	}
-	msg := json.RawMessage(raw)
-	return &msg, nil
-}
-
-func parseWeekdays(s string) ([]map[string]any, error) {
-	dayMap := map[string]int{
-		"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
-	}
-	parts := strings.Split(s, ",")
-	var result []map[string]any
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		wd, ok := dayMap[p]
-		if !ok {
-			return nil, fmt.Errorf("unknown weekday: %s (use: sun,mon,tue,wed,thu,fri,sat)", p)
-		}
-		result = append(result, map[string]any{"wd": wd})
-	}
-	if len(result) == 0 {
-		return nil, fmt.Errorf("no weekdays specified")
-	}
-	return result, nil
+// endOfToday is the last second of today, as Things dates count it.
+func endOfToday() time.Time {
+	return today().Add(24*time.Hour - time.Second)
 }
 
 func parseDate(s string) *time.Time {
@@ -317,6 +216,21 @@ func parseDate(s string) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// parseDay reads a date to write: YYYY-MM-DD, or an RFC 3339 time, of which
+// only the calendar day in its own offset counts. Things stores a date as
+// midnight UTC on the day, so a write must never carry an hour or an offset.
+func parseDay(s string) *time.Time {
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return &t
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
+	}
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return &day
 }
 
 func parseTime(s string) (int, bool) {
@@ -484,7 +398,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 			st = 0
 		default:
 			// Try parsing as YYYY-MM-DD date
-			if t := parseDate(v); t != nil {
+			if t := parseDay(v); t != nil {
 				ts := t.Unix()
 				sr = &ts
 				tir = &ts
@@ -496,7 +410,7 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 		nt = textNote(v)
 	}
 	if v, ok := opts["deadline"]; ok {
-		if t := parseDate(v); t != nil {
+		if t := parseDay(v); t != nil {
 			ts := t.Unix()
 			dd = &ts
 		}
@@ -523,140 +437,21 @@ func newTaskCreatePayload(title string, opts map[string]string, ix int) TaskCrea
 		tg = strings.Split(v, ",")
 	}
 
-	var rmd *int64
 	var ato *int
-	if rmdStr, ok := opts["reminder_date"]; ok {
-		if timeStr, ok2 := opts["reminder_time"]; ok2 {
-			if dt := parseDate(rmdStr); dt != nil {
-				if offset, valid := parseTime(timeStr); valid {
-					ts := dt.Unix()
-					rmd = &ts
-					ato = &offset
-				}
-			}
-		}
-	}
-
-	var rr *json.RawMessage
-	var icsd *int64
-	if v, ok := opts["recurrence"]; ok && v != "" {
-		// Use schedule date as reference for weekday, fall back to today
-		recRef := time.Now()
-		if schedStr, ok := opts["schedule"]; ok {
-			if dt := parseDate(schedStr); dt != nil {
-				recRef = *dt
-			}
-		}
-		parsed, err := parseRecurrence(v, recRef)
-		if err == nil && parsed != nil {
-			rr = parsed
-			today := todayMidnightUTC()
-			icsd = &today
+	if v, ok := opts["reminder_time"]; ok {
+		if offset, valid := parseTime(v); valid {
+			ato = &offset
 		}
 	}
 
 	return TaskCreatePayload{
-		Tp: tp, Sr: sr, Dds: nil, Rt: []string{}, Rmd: rmd,
+		Tp: tp, Sr: sr, Dds: nil, Rt: []string{}, Rmd: nil,
 		Ss: 0, Tr: false, Dl: []string{}, Icp: false, St: st,
 		Ar: ar, Tt: title, Do: 0, Lai: nil, Tir: tir,
 		Tg: tg, Agr: agr, Ix: ix, Cd: now, Lt: false,
 		Icc: 0, Md: nil, Ti: 0, Dd: dd, Ato: ato,
-		Nt: nt, Icsd: icsd, Pr: pr, Rp: nil, Acrd: nil,
-		Sp: nil, Sb: sb, Rr: rr, Xx: defaultExtension(),
-	}
-}
-
-func newTemplatePayload(instance TaskCreatePayload, rr *json.RawMessage, nextOccurrence int64) TaskCreatePayload {
-	template := instance
-	today := todayMidnightUTC()
-	template.Rr = rr
-	template.Icsd = &today
-	template.Rt = []string{}
-	template.Sr = &nextOccurrence
-	template.Tir = &nextOccurrence
-	template.St = int(thingscloud.TaskScheduleAnytime)
-	template.Sb = 0
-	return template
-}
-
-// splitRecurringPayload materializes the actual Things model: an internal
-// template with rr plus a visible instance whose rt points at the template.
-func splitRecurringPayload(payload TaskCreatePayload) (string, TaskCreatePayload, TaskCreatePayload, error) {
-	if payload.Rr == nil {
-		return "", TaskCreatePayload{}, TaskCreatePayload{}, fmt.Errorf("recurrence rule is required")
-	}
-	reference := time.Now().UTC()
-	if payload.Tir != nil {
-		reference = time.Unix(*payload.Tir, 0).UTC()
-	} else if payload.Sr != nil {
-		reference = time.Unix(*payload.Sr, 0).UTC()
-	}
-	var configuration thingscloud.RepeaterConfiguration
-	if err := json.Unmarshal(*payload.Rr, &configuration); err != nil {
-		return "", TaskCreatePayload{}, TaskCreatePayload{}, fmt.Errorf("parse recurrence: %w", err)
-	}
-	next := configuration.NextOccurrenceAfter(reference)
-	if next.IsZero() {
-		return "", TaskCreatePayload{}, TaskCreatePayload{}, fmt.Errorf("could not compute next recurrence date")
-	}
-
-	templateUUID := generateUUID()
-	template := newTemplatePayload(payload, payload.Rr, next.Unix())
-	instance := payload
-	instance.Rr = nil
-	instance.Icsd = nil
-	instance.Rt = []string{templateUUID}
-	return templateUUID, template, instance, nil
-}
-
-func recurringTemplateForEdit(task *thingscloud.Task, req mcp.CallToolRequest, rr *json.RawMessage, nextOccurrence int64) TaskCreatePayload {
-	today := todayMidnightUTC()
-	title := task.Title
-	if v := req.GetString("title", ""); v != "" {
-		title = v
-	}
-	note := task.Note
-	if v := req.GetString("note", ""); v != "" {
-		note = v
-	}
-	areas := append([]string(nil), task.AreaIDs...)
-	projects := append([]string(nil), task.ParentTaskIDs...)
-	headings := append([]string(nil), task.ActionGroupIDs...)
-	if v := req.GetString("area_uuid", ""); v != "" {
-		areas, projects, headings = []string{v}, []string{}, []string{}
-	}
-	if v := req.GetString("project_uuid", ""); v != "" {
-		areas, projects, headings = []string{}, []string{v}, []string{}
-	}
-	if v := req.GetString("heading_uuid", ""); v != "" {
-		areas, projects, headings = []string{}, []string{}, []string{v}
-	}
-	tags := append([]string(nil), task.TagIDs...)
-	if v := req.GetString("tags", ""); v != "" {
-		tags = splitUUIDs(v)
-	}
-	var deadline *int64
-	if task.DeadlineDate != nil {
-		value := task.DeadlineDate.Unix()
-		deadline = &value
-	}
-	if v := req.GetString("deadline", ""); v != "" {
-		if v == "none" {
-			deadline = nil
-		} else if parsed := parseDate(v); parsed != nil {
-			value := parsed.Unix()
-			deadline = &value
-		}
-	}
-
-	return TaskCreatePayload{
-		Tp: int(task.Type), Sr: &nextOccurrence, Rt: []string{}, Ss: 0,
-		Tr: false, Dl: append([]string(nil), task.DelegateIDs...), Icp: false,
-		St: int(thingscloud.TaskScheduleAnytime), Ar: areas, Tt: title,
-		Do: task.DueOrder, Tir: &nextOccurrence, Tg: tags, Agr: headings,
-		Ix: task.Index, Cd: nowTs(), Lt: false, Icc: 0, Ti: 0, Dd: deadline,
-		Ato: task.AlarmTimeOffset, Nt: textNote(note), Icsd: &today, Pr: projects,
-		Sb: 0, Rr: rr, Xx: defaultExtension(),
+		Nt: nt, Icsd: nil, Pr: pr, Rp: nil, Acrd: nil,
+		Sp: nil, Sb: sb, Rr: nil, Xx: defaultExtension(),
 	}
 }
 
@@ -679,10 +474,8 @@ func (u *taskUpdate) Status(ss int) *taskUpdate       { u.fields["ss"] = ss; ret
 func (u *taskUpdate) StopDate(ts float64) *taskUpdate { u.fields["sp"] = ts; return u }
 func (u *taskUpdate) Trash(b bool) *taskUpdate        { u.fields["tr"] = b; return u }
 func (u *taskUpdate) Deadline(dd int64) *taskUpdate   { u.fields["dd"] = dd; return u }
-func (u *taskUpdate) Reminder(rmd int64) *taskUpdate  { u.fields["rmd"] = rmd; return u }
 func (u *taskUpdate) AlarmOffset(ato int) *taskUpdate { u.fields["ato"] = ato; return u }
 func (u *taskUpdate) ClearReminder() *taskUpdate {
-	u.fields["rmd"] = nil
 	u.fields["ato"] = nil
 	return u
 }
@@ -717,20 +510,7 @@ func (u *taskUpdate) Schedule(st int, sr, tir any) *taskUpdate {
 	return u
 }
 func (u *taskUpdate) StartBucket(sb int) *taskUpdate { u.fields["sb"] = sb; return u }
-func (u *taskUpdate) Recurrence(rr json.RawMessage) *taskUpdate {
-	u.fields["rr"] = rr
-	return u
-}
-func (u *taskUpdate) ClearRecurrence() *taskUpdate {
-	u.fields["rr"] = nil
-	u.fields["icsd"] = nil
-	return u
-}
-func (u *taskUpdate) InstanceCreationStartDate(icsd int64) *taskUpdate {
-	u.fields["icsd"] = icsd
-	return u
-}
-func (u *taskUpdate) build() map[string]any { return u.fields }
+func (u *taskUpdate) build() map[string]any          { return u.fields }
 
 // ---------------------------------------------------------------------------
 // JSON output types
@@ -752,6 +532,7 @@ type TaskOutput struct {
 	DeadlineDate     *string `json:"deadlineDate,omitempty"`
 	ReminderTime     *string `json:"reminderTime,omitempty"`
 	IsRecurring      bool    `json:"isRecurring"`
+	InTrash          bool    `json:"inTrash,omitempty"`
 	CreationDate     *string `json:"creationDate,omitempty"`
 	ModificationDate *string `json:"modificationDate,omitempty"`
 	CompletionDate   *string `json:"completionDate,omitempty"`
@@ -804,10 +585,11 @@ func scheduleString(st thingscloud.TaskSchedule, scheduledDate *time.Time, start
 	}
 }
 
-// isToday returns true if t falls on today's date (UTC).
+// isToday returns true if t, a Things date, is today.
 func isToday(t time.Time) bool {
-	now := time.Now().UTC()
-	return t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day()
+	day := today()
+	t = t.UTC()
+	return t.Year() == day.Year() && t.Month() == day.Month() && t.Day() == day.Day()
 }
 
 // effectiveScheduledDate returns the date Things uses for the visible
@@ -834,9 +616,7 @@ func isScheduledForTodayOrPast(task *thingscloud.Task) bool {
 	if date == nil {
 		return false
 	}
-	now := time.Now().UTC()
-	todayEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
-	return !date.After(todayEnd)
+	return !date.After(endOfToday())
 }
 
 // taskScheduleString keeps schedule filters and output aligned. Pending tasks
@@ -885,6 +665,7 @@ func (t *ThingsMCP) taskToOutput(task *thingscloud.Task) TaskOutput {
 	if len(task.RecurrenceIDs) > 0 || task.Repeater != nil {
 		out.IsRecurring = true
 	}
+	out.InTrash = task.InTrash
 	const isoFormat = "2006-01-02T15:04:05Z"
 	if !task.CreationDate.IsZero() && task.CreationDate.Year() > 1970 {
 		s := task.CreationDate.UTC().Format(isoFormat)
@@ -964,9 +745,9 @@ func bestHistory(c *thingscloud.Client) (*thingscloud.History, error) {
 	}
 	full, err := c.History(own.ID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch authoritative history %s: %w", own.ID, err)
+		return nil, fmt.Errorf("fetch authoritative history %s: %w", thingscloud.HistoryFingerprint(own.ID), err)
 	}
-	log.Printf("Authoritative history: %s (serverIndex=%d, schema=%d)", full.ID, full.LatestServerIndex, full.LatestSchemaVersion)
+	log.Printf("Authoritative history: %s (serverIndex=%d, schema=%d)", thingscloud.HistoryFingerprint(full.ID), full.LatestServerIndex, full.LatestSchemaVersion)
 	return full, nil
 }
 
@@ -992,13 +773,13 @@ func NewThingsMCPForUser(email, password string, proxyURL *url.URL) (*ThingsMCP,
 	log.Printf("Fetching history for %s...", email)
 	history, err := c.History(verifyResponse.HistoryKey)
 	if err != nil {
-		return nil, fmt.Errorf("get authoritative history %s: %w", verifyResponse.HistoryKey, err)
+		return nil, fmt.Errorf("get authoritative history %s: %w", thingscloud.HistoryFingerprint(verifyResponse.HistoryKey), err)
 	}
 	t := &ThingsMCP{client: c, history: history, proxyURL: proxyURL, credential: credentialDigest(email, password)}
 	if err := t.fullRebuild(); err != nil {
 		return nil, err
 	}
-	log.Printf("History ready for %s (id=%s, serverIndex=%d).", email, history.ID, history.LatestServerIndex)
+	log.Printf("History ready for %s (id=%s, serverIndex=%d).", email, thingscloud.HistoryFingerprint(history.ID), history.LatestServerIndex)
 
 	return t, nil
 }
@@ -1208,7 +989,16 @@ func (t *ThingsMCP) fullRebuild() error {
 
 	log.Printf("Full rebuild: %d tasks, %d areas, %d tags",
 		len(state.Tasks), len(state.Areas), len(state.Tags))
+	logUnverifiedNoteEdits(state.UnverifiedNoteEdits)
 	return nil
+}
+
+// logUnverifiedNoteEdits logs note edits whose checksum no reading of their
+// offsets produced, whose notes may differ from the ones the Things apps show.
+func logUnverifiedNoteEdits(n int) {
+	if n > 0 {
+		log.Printf("%d note edit(s) matched no checksum; those notes may differ from the Things apps'", n)
+	}
 }
 
 func cloneHistoryCursor(h *thingscloud.History) *thingscloud.History {
@@ -1250,14 +1040,17 @@ func (t *ThingsMCP) incrementalSync() ([]thingscloud.Item, error) {
 	}
 
 	t.mu.Lock()
+	unverified := t.state.UnverifiedNoteEdits
 	if err := t.state.Update(delta...); err != nil {
 		t.mu.Unlock()
 		return nil, fmt.Errorf("apply incremental state: %w", err)
 	}
+	unverified = t.state.UnverifiedNoteEdits - unverified
 	t.history = candidateHistory
 	t.mu.Unlock()
 
 	log.Printf("Incremental sync: applied %d new items", len(delta))
+	logUnverifiedNoteEdits(unverified)
 	return delta, nil
 }
 
@@ -1459,6 +1252,21 @@ func (t *ThingsMCP) taskMatchesProject(task *thingscloud.Task, projectUUID strin
 	return false
 }
 
+// openToDos counts a project's pending to-dos outside the Trash, leaving out
+// repeat templates, which the Things apps don't show as to-dos.
+func (t *ThingsMCP) openToDos(projectUUID string) int {
+	n := 0
+	for _, task := range t.getState().Tasks {
+		if task.Type != thingscloud.TaskTypeTask || task.Status != thingscloud.TaskStatusPending || task.InTrash || isRecurringTemplate(task) {
+			continue
+		}
+		if t.taskMatchesProject(task, projectUUID) {
+			n++
+		}
+	}
+	return n
+}
+
 // taskMatchesArea checks if a task belongs to an area, either directly
 // via AreaIDs or indirectly via its parent project's AreaIDs.
 func (t *ThingsMCP) taskMatchesArea(task *thingscloud.Task, areaUUID string) bool {
@@ -1571,6 +1379,88 @@ func (t *ThingsMCP) findTask(uuid string) *thingscloud.Task {
 // Instances never have rr — only rt pointing to their template.
 func isRecurringTemplate(task *thingscloud.Task) bool {
 	return task.Repeater != nil
+}
+
+// The write tools leave repeating to-dos to the Things apps. A repeat is a
+// hidden template holding the rule (rr). The apps make each of its to-dos on
+// its day, moving the template's next date (tir, icsd) and count (icc) as they
+// do, and completing an occurrence before its to-do exists does the same.
+// Completing, canceling, reopening, trashing or moving a to-do that exists
+// writes only that to-do, unless it repeats after completion: then a status
+// change also writes the template's completion date (acrd) and the next date
+// that follows from it (tir). A real account's history shows this across some
+// 5,000 such changes, and arthursoares/things-cloud-sdk saw the same on a
+// disposable account. This server doesn't keep a template in step, so writing
+// a repeat rule, or changing the status of a to-do that repeats after
+// completion, could leave a repeat that never comes back or comes back at the
+// wrong time, and the tools refuse both. They also leave alone a to-do with a
+// non-null rp: the apps write rp as null, and this server can't read a rule
+// kept there.
+var (
+	errRecurrence             = errors.New("repeating to-dos can't be set up or changed here yet; set the repeat in the Things app")
+	errRepeatsAfterCompletion = errors.New("this to-do repeats after completion, and completing it in the Things app is what schedules the next one; complete it there")
+	errModernRepeater         = errors.New("this to-do has a repeat rule in a format this server can't read; change it in the Things app")
+)
+
+// refuseRecurrence refuses a write that names a repeat rule.
+func refuseRecurrence(req mcp.CallToolRequest) error {
+	if _, ok := req.GetArguments()["recurrence"]; ok {
+		return errRecurrence
+	}
+	return nil
+}
+
+// refuseRepeatAfterCompletion refuses a status change to a to-do that repeats
+// after completion, or one whose repeat it can't read. Other repeating to-dos
+// come back on their schedule, so changing one's status changes only it.
+func (t *ThingsMCP) refuseRepeatAfterCompletion(task *thingscloud.Task) error {
+	if len(task.RecurrenceIDs) == 0 {
+		return nil
+	}
+	template := t.getState().Tasks[task.RecurrenceIDs[0]]
+	if template == nil || template.ModernRepeater || template.Repeater == nil || template.Repeater.Type != repeatOnSchedule {
+		return errRepeatsAfterCompletion
+	}
+	return nil
+}
+
+// repeatOnSchedule is a repeat rule's type (tp) for a to-do that repeats on a
+// schedule. 1 repeats it after completion.
+const repeatOnSchedule = 0
+
+// A reminder in Things is a time of day on the day a to-do is scheduled. The
+// apps keep it as ato, seconds after midnight of sr, and have no reminder date:
+// rmd, which this server used to write as one, is the date a repeat rule was
+// migrated, per arthursoares/things-cloud-sdk. So a reminder needs a scheduled
+// day, and a to-do that loses its day loses its reminder, as in the apps.
+var (
+	errReminderDate      = errors.New("reminder_date isn't taken: Things reminds you on the day a to-do is scheduled, so set schedule to that day and reminder_time to the time")
+	errReminderNeedsADay = errors.New("a reminder needs a day: schedule the to-do for today, tonight or a date")
+)
+
+// refuseReminderDate refuses a write that names a reminder date.
+func refuseReminderDate(req mcp.CallToolRequest) error {
+	if _, ok := req.GetArguments()["reminder_date"]; ok {
+		return errReminderDate
+	}
+	return nil
+}
+
+// isDated reports whether a schedule argument names a day: today, tonight or
+// a date.
+func isDated(schedule string) bool {
+	switch schedule {
+	case "today", "tonight":
+		return true
+	case "", "anytime", "someday", "inbox":
+		return false
+	}
+	return parseDay(schedule) != nil
+}
+
+// hasDay reports whether a to-do is scheduled for a day.
+func hasDay(task *thingscloud.Task) bool {
+	return task.ScheduledDate != nil && task.ScheduledDate.Year() > 1970
 }
 
 // isUntitledTask returns true if the task has no real title. Things sometimes
@@ -1742,25 +1632,20 @@ func (t *ThingsMCP) validateOpts(opts map[string]string) error {
 		switch v {
 		case "today", "tonight", "anytime", "someday", "inbox":
 		default:
-			if parseDate(v) == nil {
+			if parseDay(v) == nil {
 				return fmt.Errorf("invalid schedule: %s", v)
 			}
 		}
 	}
-	if v := opts["deadline"]; v != "" && parseDate(v) == nil {
+	if v := opts["deadline"]; v != "" && parseDay(v) == nil {
 		return fmt.Errorf("invalid deadline: %s", v)
 	}
-	reminderDate, hasReminderDate := opts["reminder_date"]
-	reminderTime, hasReminderTime := opts["reminder_time"]
-	if hasReminderDate != hasReminderTime {
-		return fmt.Errorf("reminder_date and reminder_time must be provided together")
-	}
-	if hasReminderDate {
-		if parseDate(reminderDate) == nil {
-			return fmt.Errorf("invalid reminder_date: %s", reminderDate)
+	if v, ok := opts["reminder_time"]; ok {
+		if _, valid := parseTime(v); !valid {
+			return fmt.Errorf("invalid reminder_time: %s", v)
 		}
-		if _, ok := parseTime(reminderTime); !ok {
-			return fmt.Errorf("invalid reminder_time: %s", reminderTime)
+		if !isDated(opts["schedule"]) {
+			return errReminderNeedsADay
 		}
 	}
 	return nil
@@ -1787,6 +1672,7 @@ func outputSchemaFor(toolName string) json.RawMessage {
 			"note": stringSchema(), "status": stringSchema(), "schedule": stringSchema(),
 			"scheduledDate": stringSchema(), "deadlineDate": stringSchema(), "reminderTime": stringSchema(),
 			"isRecurring":  map[string]any{"type": "boolean"},
+			"inTrash":      map[string]any{"type": "boolean"},
 			"creationDate": stringSchema(), "modificationDate": stringSchema(), "completionDate": stringSchema(),
 			"areas":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 			"project":   map[string]any{"type": "object"},
@@ -1997,6 +1883,9 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	report := &diagReport{}
 	var allWarnings []string
 	var allErrors []string
+	// The report names histories by fingerprint: a history key alone reads
+	// and writes the history, and reports are kept and shared by URL.
+	fp := thingscloud.HistoryFingerprint
 
 	// Step 1: credential_verification
 	step1 := diagStep{
@@ -2037,11 +1926,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	step1.Status = "pass"
 	step1.Details = map[string]any{
 		"accountStatus": string(verifyResp.Status),
-		"historyKey":    verifyResp.HistoryKey,
+		"historyKey":    fp(verifyResp.HistoryKey),
 		"email":         maskEmail(verifyResp.Email),
 	}
 	step1.Log = append(step1.Log, fmt.Sprintf("Account status: %s", verifyResp.Status))
-	step1.Log = append(step1.Log, fmt.Sprintf("History key from /verify: %s", verifyResp.HistoryKey))
+	step1.Log = append(step1.Log, fmt.Sprintf("History key from /verify: %s", fp(verifyResp.HistoryKey)))
 	report.Steps = append(report.Steps, step1)
 
 	// Step 2: resolve the authoritative history, then enumerate other keys for
@@ -2073,7 +1962,7 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 
 	// Enumerate all histories for the diagnostic report.
 	type historyInfo struct {
-		ID                string `json:"id"`
+		ID                string `json:"id"` // the key's fingerprint
 		LatestServerIndex int    `json:"latestServerIndex"`
 		IsOwnHistory      bool   `json:"isOwnHistory"`
 		Selected          bool   `json:"selected"`
@@ -2095,11 +1984,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	for _, h := range histories {
 		full, ferr := client.History(h.ID)
 		if ferr != nil {
-			step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to fetch metadata: %v", h.ID, ferr))
+			step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to fetch metadata: %v", fp(h.ID), ferr))
 			continue
 		}
 		hi := historyInfo{
-			ID:                full.ID,
+			ID:                fp(full.ID),
 			LatestServerIndex: full.LatestServerIndex,
 			IsOwnHistory:      full.ID == ownHistoryID,
 			Selected:          full.ID == history.ID,
@@ -2135,11 +2024,11 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 					hi.NewestItemDate = newestDate.Format("2006-01-02")
 				}
 			} else {
-				step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to peek items: %v", full.ID, ierr))
+				step2.Log = append(step2.Log, fmt.Sprintf("History %s: failed to peek items: %v", fp(full.ID), ierr))
 			}
 		}
 		allHistories = append(allHistories, hi)
-		logLine := fmt.Sprintf("History %s: serverIndex=%d, isOwnHistory=%v, selected=%v", full.ID, hi.LatestServerIndex, hi.IsOwnHistory, hi.Selected)
+		logLine := fmt.Sprintf("History %s: serverIndex=%d, isOwnHistory=%v, selected=%v", fp(full.ID), hi.LatestServerIndex, hi.IsOwnHistory, hi.Selected)
 		if hi.NewestItemDate != "" {
 			logLine += fmt.Sprintf(", newestItemDate=%s", hi.NewestItemDate)
 		}
@@ -2148,7 +2037,7 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 
 	// Check if account history key appears in own-history-keys list
 	if len(histories) > 0 && !ownKeyFound {
-		w := fmt.Sprintf("Account history key (%s) not found in own-history-keys list", ownHistoryID)
+		w := fmt.Sprintf("Account history key (%s) not found in own-history-keys list", fp(ownHistoryID))
 		step2.Log = append(step2.Log, fmt.Sprintf("Warning: %s", w))
 		allWarnings = append(allWarnings, fmt.Sprintf("Step 2: %s", w))
 	}
@@ -2171,17 +2060,17 @@ func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
 	step2.Status = "pass"
 	step2.Details = map[string]any{
 		"historyCount":            len(histories),
-		"selectedHistory":         history.ID,
+		"selectedHistory":         fp(history.ID),
 		"selectedServerIndexMeta": selectedServerIndex,
-		"ownHistoryKey":           ownHistoryID,
+		"ownHistoryKey":           fp(ownHistoryID),
 		"selectedIsSameAsOwn":     history.ID == ownHistoryID,
 		"allHistories":            allHistories,
 	}
 	if history.ID != ownHistoryID && len(histories) > 1 {
-		step2.Log = append(step2.Log, fmt.Sprintf("WARNING: Selected history %s differs from OwnHistory %s — account may have multiple sync streams", history.ID, ownHistoryID))
+		step2.Log = append(step2.Log, fmt.Sprintf("WARNING: Selected history %s differs from OwnHistory %s — account may have multiple sync streams", fp(history.ID), fp(ownHistoryID)))
 		allWarnings = append(allWarnings, "Selected history differs from OwnHistory — multi-device account detected")
 	}
-	step2.Log = append(step2.Log, fmt.Sprintf("Selected history: %s (serverIndex=%d)", history.ID, history.LatestServerIndex))
+	step2.Log = append(step2.Log, fmt.Sprintf("Selected history: %s (serverIndex=%d)", fp(history.ID), history.LatestServerIndex))
 	report.Steps = append(report.Steps, step2)
 
 	// Step 3: sync_history
@@ -3416,8 +3305,7 @@ func (t *ThingsMCP) handleOverview(_ context.Context, req mcp.CallToolRequest) (
 	// --- Today tasks ---
 	todaySet := make(map[string]bool)
 	var todayRaw []*thingscloud.Task
-	now := time.Now().UTC()
-	todayEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
+	todayEnd := endOfToday()
 	cutoff := todayEnd.AddDate(0, 0, lookahead)
 
 	for _, task := range state.Tasks {
@@ -3500,8 +3388,15 @@ func (t *ThingsMCP) handleCreateTask(_ context.Context, req mcp.CallToolRequest)
 		return errResult(err.Error()), nil
 	}
 
+	if err := refuseRecurrence(req); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
+	}
+
 	opts := make(map[string]string)
-	for _, key := range []string{"note", "schedule", "deadline", "project_uuid", "heading_uuid", "area_uuid", "tags", "checklist", "reminder_date", "reminder_time", "recurrence"} {
+	for _, key := range []string{"note", "schedule", "deadline", "project_uuid", "heading_uuid", "area_uuid", "tags", "checklist", "reminder_time"} {
 		if v := req.GetString(key, ""); v != "" {
 			opts[key] = v
 		}
@@ -3511,12 +3406,6 @@ func (t *ThingsMCP) handleCreateTask(_ context.Context, req mcp.CallToolRequest)
 		return errResult(err.Error()), nil
 	}
 
-	// Validate recurrence format early
-	if v, ok := opts["recurrence"]; ok && v != "" {
-		if _, err := parseRecurrence(v, time.Now()); err != nil {
-			return errResult(err.Error()), nil
-		}
-	}
 	if v, ok := opts["checklist"]; ok {
 		for _, item := range strings.Split(v, ",") {
 			if strings.TrimSpace(item) == "" {
@@ -3531,19 +3420,7 @@ func (t *ThingsMCP) handleCreateTask(_ context.Context, req mcp.CallToolRequest)
 	taskUUID := generateUUID()
 	payload := newTaskCreatePayload(title, opts, ix)
 
-	var envelopes []thingscloud.Identifiable
-	if payload.Rr != nil {
-		templateUUID, template, instance, err := splitRecurringPayload(payload)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		envelopes = append(envelopes,
-			writeEnvelope{id: templateUUID, action: 0, kind: "Task6", payload: template},
-			writeEnvelope{id: taskUUID, action: 0, kind: "Task6", payload: instance},
-		)
-	} else {
-		envelopes = append(envelopes, writeEnvelope{id: taskUUID, action: 0, kind: "Task6", payload: payload})
-	}
+	envelopes := []thingscloud.Identifiable{writeEnvelope{id: taskUUID, action: 0, kind: "Task6", payload: payload}}
 
 	// Checklist items
 	if v, ok := opts["checklist"]; ok && v != "" {
@@ -3570,8 +3447,15 @@ func (t *ThingsMCP) handleCreateProject(_ context.Context, req mcp.CallToolReque
 		return errResult(err.Error()), nil
 	}
 
+	if err := refuseRecurrence(req); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
+	}
+
 	opts := map[string]string{"type": "project"}
-	for _, key := range []string{"note", "schedule", "deadline", "area_uuid", "tags", "reminder_date", "reminder_time", "recurrence"} {
+	for _, key := range []string{"note", "schedule", "deadline", "area_uuid", "tags", "reminder_time"} {
 		if v := req.GetString(key, ""); v != "" {
 			opts[key] = v
 		}
@@ -3581,31 +3465,11 @@ func (t *ThingsMCP) handleCreateProject(_ context.Context, req mcp.CallToolReque
 		return errResult(err.Error()), nil
 	}
 
-	// Validate recurrence format early
-	if v, ok := opts["recurrence"]; ok && v != "" {
-		if _, err := parseRecurrence(v, time.Now()); err != nil {
-			return errResult(err.Error()), nil
-		}
-	}
-
 	ix := nextTopIndexBelow(t.minProjectIndex(opts["area_uuid"]))
 
 	projectUUID := generateUUID()
 	payload := newTaskCreatePayload(title, opts, ix)
-	var envelopes []thingscloud.Identifiable
-	if payload.Rr != nil {
-		templateUUID, template, instance, err := splitRecurringPayload(payload)
-		if err != nil {
-			return errResult(err.Error()), nil
-		}
-		envelopes = append(envelopes,
-			writeEnvelope{id: templateUUID, action: 0, kind: "Task6", payload: template},
-			writeEnvelope{id: projectUUID, action: 0, kind: "Task6", payload: instance},
-		)
-	} else {
-		envelopes = append(envelopes, writeEnvelope{id: projectUUID, action: 0, kind: "Task6", payload: payload})
-	}
-	if err := t.writeAndSync(envelopes...); err != nil {
+	if err := t.writeAndSync(writeEnvelope{id: projectUUID, action: 0, kind: "Task6", payload: payload}); err != nil {
 		return errResult(fmt.Sprintf("create project: %v", err)), nil
 	}
 	return jsonResult(map[string]string{"status": "created", "uuid": projectUUID, "title": title}), nil
@@ -3795,12 +3659,25 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	}
 
 	if err := t.validateTaskUUID(taskUUID); err != nil {
-		return errResult(err.Error()), nil
+		// validateTaskUUID leaves out the Trash, from which an item can
+		// only be restored.
+		if target := t.findTask(taskUUID); target == nil || !target.InTrash || req.GetString("status", "") != "restored" {
+			return errResult(err.Error()), nil
+		}
 	}
 
 	editTarget := t.findTask(taskUUID)
 	if editTarget != nil && isRecurringTemplate(editTarget) {
 		return errResult(fmt.Sprintf("cannot edit recurring template directly: %s", taskUUID)), nil
+	}
+	if editTarget != nil && editTarget.ModernRepeater {
+		return errResult(errModernRepeater.Error()), nil
+	}
+	if err := refuseRecurrence(req); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := refuseReminderDate(req); err != nil {
+		return errResult(err.Error()), nil
 	}
 
 	// Validate referenced UUIDs
@@ -3815,7 +3692,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	}
 	args := req.GetArguments()
 	mutating := false
-	for _, key := range []string{"title", "note", "schedule", "deadline", "area_uuid", "project_uuid", "heading_uuid", "tags", "reminder_date", "reminder_time", "recurrence", "status"} {
+	for _, key := range []string{"title", "note", "schedule", "deadline", "area_uuid", "project_uuid", "heading_uuid", "tags", "reminder_time", "status"} {
 		if _, ok := args[key]; ok {
 			mutating = true
 			break
@@ -3825,8 +3702,18 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 		return errResult("at least one editable field must be provided"), nil
 	}
 
+	if _, ok := args["status"]; ok && editTarget != nil {
+		if err := t.refuseRepeatAfterCompletion(editTarget); err != nil {
+			return errResult(err.Error()), nil
+		}
+	}
+	if status := req.GetString("status", ""); (status == "completed" || status == "canceled") && editTarget != nil && editTarget.Type == thingscloud.TaskTypeProject {
+		if n := t.openToDos(taskUUID); n > 0 {
+			return errResult(fmt.Sprintf("this project still has %d open to-do(s); complete or cancel them first, as the Things apps do when a project is finished", n)), nil
+		}
+	}
+
 	u := newTaskUpdate()
-	var envelopes []thingscloud.Identifiable
 	if _, ok := args["title"]; ok {
 		v := strings.TrimSpace(req.GetString("title", ""))
 		if v == "" {
@@ -3859,7 +3746,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 			u.Schedule(0, nil, nil).StartBucket(0)
 		default:
 			// Try parsing as YYYY-MM-DD date
-			if dt := parseDate(sched); dt != nil {
+			if dt := parseDay(sched); dt != nil {
 				ts := dt.Unix()
 				u.Schedule(2, ts, ts)
 			} else {
@@ -3870,119 +3757,52 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 	if v := req.GetString("deadline", ""); v != "" {
 		if v == "none" {
 			u.fields["dd"] = nil
-		} else if dt := parseDate(v); dt != nil {
+		} else if dt := parseDay(v); dt != nil {
 			u.Deadline(dt.Unix())
 		} else {
 			return errResult(fmt.Sprintf("invalid deadline: %s", v)), nil
 		}
 	}
+	// A to-do in an area, project or heading can't stay in the Inbox, so one
+	// moved out of the Inbox becomes Anytime, as in the Things apps. Anything
+	// else keeps its schedule: a move doesn't take a to-do out of Today or off
+	// its date.
+	moved := false
 	if v := req.GetString("area_uuid", ""); v != "" {
 		u.Area(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
 	}
 	if v := req.GetString("project_uuid", ""); v != "" {
 		u.Project(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
 	}
 	if v := req.GetString("heading_uuid", ""); v != "" {
 		u.Heading(v)
-		if sched == "" {
-			u.Schedule(1, nil, nil)
-		}
+		moved = true
+	}
+	if moved && sched == "" && editTarget != nil && editTarget.Schedule == thingscloud.TaskScheduleInbox {
+		u.Schedule(int(thingscloud.TaskScheduleAnytime), nil, nil)
 	}
 	if _, ok := args["tags"]; ok {
 		u.Tags(splitUUIDs(req.GetString("tags", "")))
 	}
-	if rmdStr := req.GetString("reminder_date", ""); rmdStr != "" {
-		if rmdStr == "none" {
-			u.ClearReminder()
-		} else {
-			timeStr := req.GetString("reminder_time", "")
-			dt := parseDate(rmdStr)
-			offset, valid := parseTime(timeStr)
-			if dt == nil || !valid {
-				return errResult("valid reminder_date and reminder_time must be provided together"), nil
-			}
-			u.Reminder(dt.Unix()).AlarmOffset(offset)
+	if v := req.GetString("reminder_time", ""); v == "none" {
+		u.ClearReminder()
+	} else if v != "" {
+		offset, valid := parseTime(v)
+		if !valid {
+			return errResult(fmt.Sprintf("invalid reminder_time: %s", v)), nil
 		}
-	} else if _, ok := args["reminder_time"]; ok {
-		return errResult("reminder_date and reminder_time must be provided together"), nil
-	}
-	if v := req.GetString("recurrence", ""); v != "" {
-		if editTarget == nil {
-			return errResult(fmt.Sprintf("task not found: %s", taskUUID)), nil
+		dated := isDated(sched)
+		if sched == "" {
+			dated = editTarget != nil && hasDay(editTarget)
 		}
-
-		hasExistingTemplate := len(editTarget.RecurrenceIDs) > 0
-		var oldTemplateUUID string
-		if hasExistingTemplate {
-			oldTemplateUUID = editTarget.RecurrenceIDs[0]
-			oldTemplate := t.findTask(oldTemplateUUID)
-			if oldTemplate == nil || !isRecurringTemplate(oldTemplate) {
-				return errResult(fmt.Sprintf("recurring template not found or invalid: %s", oldTemplateUUID)), nil
-			}
+		if !dated {
+			return errResult(errReminderNeedsADay.Error()), nil
 		}
-
-		if v == "none" {
-			if !req.GetBool("confirm_destructive", false) {
-				return errResult("confirm_destructive=true is required to permanently stop recurrence"), nil
-			}
-			// Remove recurrence: clear rt on instance, trash old template
-			u.fields["rt"] = []string{}
-			u.ClearRecurrence()
-			if hasExistingTemplate {
-				trashUpdate := newTaskUpdate()
-				trashUpdate.Trash(true)
-				envelopes = append(envelopes, writeEnvelope{id: oldTemplateUUID, action: 1, kind: "Task6", payload: trashUpdate.build()})
-			}
-		} else {
-			// Add or change recurrence
-			recRef := time.Now()
-			if schedStr := req.GetString("schedule", ""); schedStr != "" {
-				if dt := parseDate(schedStr); dt != nil {
-					recRef = *dt
-				}
-			} else if editTarget.TodayIndexRefDate != nil {
-				recRef = *editTarget.TodayIndexRefDate
-			} else if editTarget.ScheduledDate != nil {
-				recRef = *editTarget.ScheduledDate
-			}
-
-			rr, err := parseRecurrence(v, recRef)
-			if err != nil {
-				return errResult(err.Error()), nil
-			}
-			if rr == nil {
-				return errResult("invalid recurrence"), nil
-			}
-
-			// Compute next occurrence for template tir
-			var rc thingscloud.RepeaterConfiguration
-			if err := json.Unmarshal(*rr, &rc); err != nil {
-				return errResult(fmt.Sprintf("internal: parse recurrence: %v", err)), nil
-			}
-			nextDate := rc.NextOccurrenceAfter(recRef)
-			if nextDate.IsZero() {
-				return errResult("could not compute next recurrence date"), nil
-			}
-			nextTir := nextDate.Unix()
-
-			newTemplateUUID := generateUUID()
-			template := recurringTemplateForEdit(editTarget, req, rr, nextTir)
-			envelopes = append(envelopes, writeEnvelope{id: newTemplateUUID, action: 0, kind: "Task6", payload: template})
-			u.fields["rt"] = []string{newTemplateUUID}
-			u.ClearRecurrence()
-
-			if hasExistingTemplate {
-				trashUpdate := newTaskUpdate()
-				trashUpdate.Trash(true)
-				envelopes = append(envelopes, writeEnvelope{id: oldTemplateUUID, action: 1, kind: "Task6", payload: trashUpdate.build()})
-			}
-		}
+		u.AlarmOffset(offset)
+	} else if sched != "" && !isDated(sched) && editTarget != nil && editTarget.AlarmTimeOffset != nil {
+		u.ClearReminder()
 	}
 	if v := req.GetString("status", ""); v != "" {
 		switch v {
@@ -4002,8 +3822,7 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 		}
 	}
 
-	envelopes = append(envelopes, writeEnvelope{id: taskUUID, action: 1, kind: "Task6", payload: u.build()})
-	if err := t.writeAndSync(envelopes...); err != nil {
+	if err := t.writeAndSync(writeEnvelope{id: taskUUID, action: 1, kind: "Task6", payload: u.build()}); err != nil {
 		return errResult(fmt.Sprintf("edit task: %v", err)), nil
 	}
 	return jsonResult(map[string]string{"status": "updated", "uuid": taskUUID}), nil
@@ -4109,7 +3928,13 @@ func (t *ThingsMCP) handleDeleteChecklistItem(_ context.Context, req mcp.CallToo
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
+// defineTools returns the tools um's policy registers.
 func defineTools(um *UserManager) []server.ServerTool {
+	return um.policy.filterTools(allTools(um))
+}
+
+// allTools returns every tool, whatever the policy.
+func allTools(um *UserManager) []server.ServerTool {
 	// wrap creates a handler closure that extracts ThingsMCP from context via UserManager.
 	wrap := func(fn func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error)) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -4150,7 +3975,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		},
 		{
 			Tool: mcp.NewTool("things_show_task",
-				mcp.WithDescription("Show full details of a single Things 3 task, including its checklist items. Returns a task object with uuid, title, status, schedule, note, dates, areas, project, tags, and a checklist array (each with uuid, title, status). Accepts a UUID prefix for convenience. Use things_find_tasks to search for tasks and obtain UUIDs."),
+				mcp.WithDescription("Show full details of a single Things 3 task, including its checklist items. Returns a task object with uuid, title, status, schedule, note, dates, areas, project, tags, inTrash (true when it is in the Trash), and a checklist array (each with uuid, title, status). Accepts a UUID prefix for convenience. Use things_find_tasks to search for tasks and obtain UUIDs."),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
@@ -4253,7 +4078,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		// --- Create tools ---
 		{
 			Tool: mcp.NewTool("things_create_task",
-				mcp.WithDescription("Create a new task in Things 3. Returns {status: \"created\", uuid, title}. The task is placed in Inbox by default; set schedule or project_uuid/area_uuid to organize it. Use things_find_projects and things_find_areas first to get valid UUIDs for assignment. When recurrence is set, an isRecurring flag appears in output."),
+				mcp.WithDescription("Create a new task in Things 3. Returns {status: \"created\", uuid, title}. The task is placed in Inbox by default; set schedule or project_uuid/area_uuid to organize it. Use things_find_projects and things_find_areas first to get valid UUIDs for assignment. Repeating to-dos are set up in the Things app, not here."),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
@@ -4265,9 +4090,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign this task to. Use things_find_areas to find area UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs to apply. Use things_find_tags to find tag UUIDs.")),
 				mcp.WithString("checklist", mcp.Description("Comma-separated checklist item titles to create within the task")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
-				mcp.WithString("recurrence", mcp.Description("Recurrence rule: daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days, every N weeks. Use \"none\" to clear.")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled. Needs schedule today, tonight or a date.")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleCreateTask(ctx, req)
@@ -4287,7 +4110,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		},
 		{
 			Tool: mcp.NewTool("things_create_project",
-				mcp.WithDescription("Create a new project in Things 3. Projects are containers that hold tasks and headings. Returns {status: \"created\", uuid, title}. Defaults to Anytime schedule."),
+				mcp.WithDescription("Create a new project in Things 3. Projects are containers that hold tasks and headings. Returns {status: \"created\", uuid, title}. Defaults to Anytime schedule. Repeating projects are set up in the Things app, not here."),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("title", mcp.Required(), mcp.Description("Project title")),
@@ -4296,9 +4119,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("deadline", mcp.Description("Deadline date in YYYY-MM-DD format")),
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign this project to. Use things_find_areas to find area UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs to apply. Use things_find_tags to find tag UUIDs.")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
-				mcp.WithString("recurrence", mcp.Description("Recurrence rule: daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days, every N weeks.")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled. Needs schedule today, tonight or a date.")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleCreateProject(ctx, req)
@@ -4388,7 +4209,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		// --- Modify tools ---
 		{
 			Tool: mcp.NewTool("things_edit_item",
-				mcp.WithDescription("Edit an existing task or project in Things 3. Only provided fields are updated; omitted fields remain unchanged. Can also change status to complete, cancel, trash, or restore items. Completing a recurring task completes only the current instance; the next instance appears automatically. Set recurrence=none to permanently stop a recurring task. Returns {status: \"updated\", uuid}."),
+				mcp.WithDescription("Edit an existing task or project in Things 3. Only provided fields are updated; omitted fields remain unchanged. Can also change status to complete, cancel, trash, or restore items. A to-do that repeats on a schedule can be completed here, and the next one appears on its date; one that repeats after completion has to be completed in the Things app, which schedules the next one. Repeats themselves are set up and changed in the Things app. Returns {status: \"updated\", uuid}."),
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
@@ -4401,10 +4222,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("project_uuid", mcp.Description("UUID of the active pending project to move to. Completed, canceled, and trashed projects are rejected. Use things_find_projects to find project UUIDs.")),
 				mcp.WithString("heading_uuid", mcp.Description("UUID of an active heading inside an active pending project. Headings in completed, canceled, or trashed projects are rejected. Use things_find_headings to find heading UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs (replaces all existing tags; empty string clears them). Use things_find_tags to find tag UUIDs.")),
-				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format, or \"none\" to clear. Must be used together with reminder_time.")),
-				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),
-				mcp.WithString("recurrence", mcp.Description("Recurrence rule: daily, weekly, weekly:mon,wed, monthly, monthly:15, monthly:last, yearly, every N days, every N weeks. Use \"none\" to clear.")),
-				mcp.WithBoolean("confirm_destructive", mcp.Description("Must be true when recurrence=none to confirm permanently stopping future occurrences")),
+				mcp.WithString("reminder_time", mcp.Description("Time to be reminded, HH:MM 24-hour (e.g. 09:00, 14:30), on the day the item is scheduled, or \"none\" to remove the reminder. Needs a day: schedule today, tonight or a date, in this call or already. Scheduling the item for anytime, someday or the inbox removes its reminder.")),
 				mcp.WithString("status", mcp.Description("Set item status: pending, completed, canceled, trashed (move to trash), restored (restore from trash)"), mcp.Enum("pending", "completed", "canceled", "trashed", "restored")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -4512,15 +4330,6 @@ func defineTools(um *UserManager) []server.ServerTool {
 	for i := range tools {
 		tools[i].Tool.RawOutputSchema = outputSchemaFor(tools[i].Tool.Name)
 	}
-	if um.policy.readOnly {
-		readOnlyTools := tools[:0]
-		for _, tool := range tools {
-			if hint := tool.Tool.Annotations.ReadOnlyHint; hint != nil && *hint {
-				readOnlyTools = append(readOnlyTools, tool)
-			}
-		}
-		tools = readOnlyTools
-	}
 	return tools
 }
 
@@ -4551,6 +4360,17 @@ func main() {
 	}
 	if um.policy.readOnly {
 		log.Printf("READ_ONLY: write tools disabled")
+	}
+	if err := um.policy.checkTools(allTools(um)); err != nil {
+		log.Fatalf("%v", err)
+	}
+	if um.policy.writeTools != nil {
+		var names []string
+		for name := range um.policy.writeTools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		log.Printf("WRITE_TOOLS: only %s", strings.Join(names, ", "))
 	}
 
 	single, err := loadSingleUser()

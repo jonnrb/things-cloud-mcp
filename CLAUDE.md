@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 No linter configured. Run tests with `/usr/local/go/bin/go test ./...`. Verify build with `go build ./...`.
 
-Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging).
+Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging), `TZ` (zone whose day is "today", UTC if unset), `READ_ONLY` (read tools only), `WRITE_TOOLS` (comma-separated write tools to offer; unset offers all). See AGENTS.md for the rest.
 
 ## Architecture
 
@@ -37,13 +37,15 @@ Before adding or modifying MCP tool definitions, check the [MCP builder skill](h
 
 **Tool handlers** follow: `func (t *ThingsMCP) handle<Name>(ctx, req) (*CallToolResult, error)`. Tool definitions use `mcp.NewTool()` with `mcp.WithString/WithBoolean` params. All registered via `wrap()` which handles user extraction. Exception: `things_diagnose` uses a custom handler with `extractCredentials()` because it needs raw email/password to create a fresh diagnostic client.
 
-**Wire format for writes** uses abbreviated JSON fields (`tt`=title, `nt`=note, `st`=schedule, `dd`=deadline, `sb`=startBucket/evening). Notes require CRC32 checksums: `WireNote{_t: "tx", ch: crc32, v: text, t: 1}`. Use `newTaskUpdate()` builder for constructing updates.
+**Wire format for writes** uses abbreviated JSON fields (`tt`=title, `nt`=note, `st`=schedule, `dd`=deadline, `sb`=startBucket/evening). Notes require CRC32 checksums: `WireNote{_t: "tx", ch: crc32, v: text, t: 1}`. A reminder is `ato` (seconds after midnight) on the scheduled day `sr`; there is no reminder date, and `rmd` (a repeat rule's migration date) is never written. Use `newTaskUpdate()` builder for constructing updates.
 
 **Date handling**: `parseDate()` tries RFC3339 first (e.g. `2025-03-01T00:00:00+08:00`), then falls back to `YYYY-MM-DD` (UTC midnight). Date filters are exclusive (strict `.Before()`/`.After()`). Output uses ISO8601. Zero-value dates (year ≤ 1970) are filtered from output. Schedule/deadline dates are timezone-agnostic (Things stores date-only); `created_*` filters benefit from RFC3339 with timezone since `CreationDate` has full timestamp precision.
 
-**Recurrence**: User-facing strings (`daily`, `weekly:mon,wed`, `monthly:15`, `every 3 days`) converted to Things Cloud wire format (`rrv`, `fu`, `fa`, `of`, `wd`). Weekly uses `wd` (weekday bitmask), not `dy`. Recurring tasks use a template+instance model: templates have `rr` (recurrence rule) + `icsd`, instances have `rt` (pointing to template). `isRecurringTemplate()` detects templates; they are filtered from all API outputs. Creation sets `rr` directly on the task (single entity); Things app creates instances on next sync. `handleEditTask` manages template lifecycle on recurrence changes: "change" updates existing template `rr` in place, "add" sets `rr`/`icsd` on the task, "none" trashes the template.
+**Recurrence**: Recurring tasks use a template+instance model: templates have `rr` (recurrence rule; `tp` 0 repeats on a schedule, 1 after completion) + `icsd`, instances have `rt` (pointing to template). `isRecurringTemplate()` detects templates; they are filtered from all API outputs. Writes leave repeats to the Things apps: `refuseRecurrence` rejects a `recurrence` argument, `refuseRepeatAfterCompletion` rejects a status change to an instance of an after-completion repeat (or one whose template can't be read), and `handleEditTask` rejects templates and tasks with a non-null `rp` (`Task.ModernRepeater`): the apps write `rp` as null, and the server can't read a rule kept there.
 
 **Error/result helpers**: `errResult(msg)` for errors, `jsonResult(v)` for success. Validation functions (`validateTaskUUID`, `validateOpts`) run before writes.
+
+**History keys are credentials**: Things Cloud serves a history's items and takes commits to it with the key alone, so logs, errors and `things_diagnose` reports (kept and shared by URL) name a history by `thingscloud.HistoryFingerprint(key)`, never the key. The SDK redacts keys from its errors, retry log and `THINGS_DEBUG` dumps.
 
 **Diagnostic helpers**: `diagStepDefs` defines step metadata, `addSkippedSteps(report, fromStep)` marks remaining steps as skipped on failure, `extractCredentials(ctx, um)` resolves email/password from context (shared by `getUserFromContext` and `things_diagnose`). JSON output uses camelCase keys throughout.
 
