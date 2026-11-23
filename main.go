@@ -1382,16 +1382,20 @@ func isRecurringTemplate(task *thingscloud.Task) bool {
 }
 
 // The write tools leave repeating to-dos to the Things apps. A repeat is a
-// hidden template holding the rule (rr), and the apps keep it in step with its
-// to-dos in ways this server doesn't: completing one of them also moves the
-// template's next date (tir, icsd) and count (icc), and for a repeat after
-// completion records the completion date (acrd), from which the next date
-// follows. arthursoares/things-cloud-sdk found this on a disposable account,
-// and a real account's history showed the same. Writing a repeat rule, or
-// completing a to-do that repeats after completion, here could leave a repeat
-// that never comes back or comes back at the wrong time, so the tools refuse
-// both. They also leave alone a to-do with a non-null rp: the apps write rp as
-// null, and this server can't read a rule kept there.
+// hidden template holding the rule (rr). The apps make each of its to-dos on
+// its day, moving the template's next date (tir, icsd) and count (icc) as they
+// do, and completing an occurrence before its to-do exists does the same.
+// Completing, canceling, reopening, trashing or moving a to-do that exists
+// writes only that to-do, unless it repeats after completion: then a status
+// change also writes the template's completion date (acrd) and the next date
+// that follows from it (tir). A real account's history shows this across some
+// 5,000 such changes, and arthursoares/things-cloud-sdk saw the same on a
+// disposable account. This server doesn't keep a template in step, so writing
+// a repeat rule, or changing the status of a to-do that repeats after
+// completion, could leave a repeat that never comes back or comes back at the
+// wrong time, and the tools refuse both. They also leave alone a to-do with a
+// non-null rp: the apps write rp as null, and this server can't read a rule
+// kept there.
 var (
 	errRecurrence             = errors.New("repeating to-dos can't be set up or changed here yet; set the repeat in the Things app")
 	errRepeatsAfterCompletion = errors.New("this to-do repeats after completion, and completing it in the Things app is what schedules the next one; complete it there")
