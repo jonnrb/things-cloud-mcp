@@ -1381,25 +1381,31 @@ func isRecurringTemplate(task *thingscloud.Task) bool {
 	return task.Repeater != nil
 }
 
-// The write tools leave repeating to-dos to the Things apps. A repeat is a
-// hidden template holding the rule (rr). The apps make each of its to-dos on
-// its day, moving the template's next date (tir, icsd) and count (icc) as they
-// do, and completing an occurrence before its to-do exists does the same.
-// Completing, canceling, reopening, trashing or moving a to-do that exists
-// writes only that to-do, unless it repeats after completion: then a status
-// change also writes the template's completion date (acrd) and the next date
-// that follows from it (tir). A real account's history shows this across some
-// 5,000 such changes, and arthursoares/things-cloud-sdk saw the same on a
-// disposable account. This server doesn't keep a template in step, so writing
-// a repeat rule, or changing the status of a to-do that repeats after
-// completion, could leave a repeat that never comes back or comes back at the
-// wrong time, and the tools refuse both. They also leave alone a to-do with a
-// non-null rp: the apps write rp as null, and this server can't read a rule
-// kept there.
+// The write tools leave repeat rules to the Things apps. A repeat is a hidden
+// template holding the rule (rr). The apps make each of its to-dos on its day,
+// moving the template's next date (tir, icsd) and count (icc) as they do, and
+// completing an occurrence before its to-do exists does the same. Completing,
+// canceling, reopening, trashing or moving a to-do that exists writes only that
+// to-do, unless it repeats after completion: then a status change also writes
+// the template's completion date (acrd) and the next date that follows from it
+// (tir). A real account's history shows this across some 5,000 such changes,
+// and arthursoares/things-cloud-sdk saw the same on a disposable account.
+//
+// So things_edit_item completes, cancels and reopens a to-do that repeats
+// after completion the way the apps do, writing the template's acrd and tir in
+// the same commit (repeatUpdate). It refuses what it can't do that way: writing
+// a repeat rule; trashing or restoring a to-do that repeats after completion,
+// which also moves its template in the apps; and completing one whose rule
+// stops after a count or before the next date, where the apps decide how the
+// repeat ends. It also leaves alone a to-do with a non-null rp: the apps write
+// rp as null, and this server can't read a rule kept there.
 var (
-	errRecurrence             = errors.New("repeating to-dos can't be set up or changed here yet; set the repeat in the Things app")
-	errRepeatsAfterCompletion = errors.New("this to-do repeats after completion, and completing it in the Things app is what schedules the next one; complete it there")
-	errModernRepeater         = errors.New("this to-do has a repeat rule in a format this server can't read; change it in the Things app")
+	errRecurrence       = errors.New("repeating to-dos can't be set up or changed here yet; set the repeat in the Things app")
+	errModernRepeater   = errors.New("this to-do has a repeat rule in a format this server can't read; change it in the Things app")
+	errRepeatUnreadable = errors.New("this to-do's repeat can't be read here, so the next one couldn't be scheduled; change its status in the Things app")
+	errRepeatTrash      = errors.New("this to-do repeats after completion, and trashing or restoring it also moves the next one in the Things apps; do that in the Things app")
+	errRepeatEnds       = errors.New("this to-do repeats after completion a set number of times or until a date, and the Things app decides when that ends; complete it there")
+	errRepeatingProject = errors.New("this project repeats after completion; change its status in the Things app, which schedules the next one")
 )
 
 // refuseRecurrence refuses a write that names a repeat rule.
@@ -1410,23 +1416,115 @@ func refuseRecurrence(req mcp.CallToolRequest) error {
 	return nil
 }
 
-// refuseRepeatAfterCompletion refuses a status change to a to-do that repeats
-// after completion, or one whose repeat it can't read. Other repeating to-dos
-// come back on their schedule, so changing one's status changes only it.
-func (t *ThingsMCP) refuseRepeatAfterCompletion(task *thingscloud.Task) error {
+// Repeat rule types (tp).
+const (
+	repeatOnSchedule      = 0
+	repeatAfterCompletion = 1
+)
+
+// repeatUpdate returns what changing task's status to status also writes to
+// its repeat's template, as the Things apps do: nothing for a to-do that
+// repeats on a schedule, which comes back on its dates. For one that repeats
+// after completion, completing or canceling it writes the day it was done
+// (acrd) and the day the next one starts (tir), from which the apps make the
+// next to-do; reopening it clears both, so no next one comes while it's open.
+// A change between done states (completed and canceled), or to the status a
+// to-do already has, leaves the template as it is. Changes the apps would make
+// differently, or for a repeat this can't read, are refused.
+func (t *ThingsMCP) repeatUpdate(task *thingscloud.Task, status string) (*writeEnvelope, error) {
 	if len(task.RecurrenceIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	template := t.getState().Tasks[task.RecurrenceIDs[0]]
-	if template == nil || template.ModernRepeater || template.Repeater == nil || template.Repeater.Type != repeatOnSchedule {
-		return errRepeatsAfterCompletion
+	if template == nil || template.ModernRepeater || template.Repeater == nil {
+		return nil, errRepeatUnreadable
 	}
-	return nil
+	rule := template.Repeater
+	switch rule.Type {
+	case repeatOnSchedule:
+		return nil, nil
+	case repeatAfterCompletion:
+	default:
+		return nil, errRepeatUnreadable
+	}
+	if task.Type != thingscloud.TaskTypeTask {
+		return nil, errRepeatingProject
+	}
+	if template.InTrash || template.Status != thingscloud.TaskStatusPending || rule.Version != 4 {
+		return nil, errRepeatUnreadable
+	}
+	open := task.Status == thingscloud.TaskStatusPending
+	update := func(payload map[string]any) *writeEnvelope {
+		return &writeEnvelope{id: template.UUID, action: 1, kind: "Task6", payload: payload}
+	}
+	switch status {
+	case "completed", "canceled":
+		if !open {
+			return nil, nil
+		}
+		done := today()
+		start, err := nextAfterCompletion(rule, template.DeadlineDate != nil, done)
+		if err != nil {
+			return nil, err
+		}
+		return update(map[string]any{"acrd": done.Unix(), "tir": start.Unix()}), nil
+	case "pending":
+		if open {
+			return nil, nil
+		}
+		return update(map[string]any{"acrd": nil, "tir": nil}), nil
+	case "trashed", "restored":
+		return nil, errRepeatTrash
+	}
+	return nil, nil
 }
 
-// repeatOnSchedule is a repeat rule's type (tp) for a to-do that repeats on a
-// schedule. 1 repeats it after completion.
-const repeatOnSchedule = 0
+// nextAfterCompletion is the day the next to-do of a repeat after completion
+// starts when the last one was done on done: done plus the rule's every N days,
+// weeks, months or years (fu, fa), less the days the rule starts each to-do
+// before its deadline (ts, zero or negative) when it gives them deadlines
+// (withDeadlines). A month or year without done's day ends at its last day, as
+// NSCalendar adds them. The rule's days of the week or month (of) belong to a
+// repeat on a schedule; a rule switched to after completion keeps them, and the
+// apps ignore them. A rule with a count (rc), or that ends (ed) before the next
+// date, is refused: the apps decide how those end.
+func nextAfterCompletion(rule *thingscloud.RepeaterConfiguration, withDeadlines bool, done time.Time) (time.Time, error) {
+	if rule.RepeatCount != nil && *rule.RepeatCount > 0 {
+		return time.Time{}, errRepeatEnds
+	}
+	n := int(rule.FrequencyAmplitude)
+	if n < 1 || rule.TimeShift > 0 || (rule.TimeShift != 0 && !withDeadlines) {
+		return time.Time{}, errRepeatUnreadable
+	}
+	var next time.Time
+	switch rule.FrequencyUnit {
+	case thingscloud.FrequencyUnitDaily:
+		next = done.AddDate(0, 0, n)
+	case thingscloud.FrequencyUnitWeekly:
+		next = done.AddDate(0, 0, 7*n)
+	case thingscloud.FrequencyUnitMonthly:
+		next = addMonths(done, n)
+	case thingscloud.FrequencyUnitYearly:
+		next = addMonths(done, 12*n)
+	default:
+		return time.Time{}, errRepeatUnreadable
+	}
+	if rule.LastScheduledAt != nil && rule.LastScheduledAt.Time().Before(next) {
+		return time.Time{}, errRepeatEnds
+	}
+	return next.AddDate(0, 0, rule.TimeShift), nil
+}
+
+// addMonths adds n months to a day, keeping its day of the month or, when the
+// month is shorter, taking its last day.
+func addMonths(day time.Time, n int) time.Time {
+	y, m, d := day.Date()
+	first := time.Date(y, m+time.Month(n), 1, 0, 0, 0, 0, time.UTC)
+	if last := first.AddDate(0, 1, -1).Day(); d > last {
+		d = last
+	}
+	return time.Date(first.Year(), first.Month(), d, 0, 0, 0, 0, time.UTC)
+}
 
 // A reminder in Things is a time of day on the day a to-do is scheduled. The
 // apps keep it as ato, seconds after midnight of sr, and have no reminder date:
@@ -3702,8 +3800,9 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 		return errResult("at least one editable field must be provided"), nil
 	}
 
+	var repeat *writeEnvelope
 	if _, ok := args["status"]; ok && editTarget != nil {
-		if err := t.refuseRepeatAfterCompletion(editTarget); err != nil {
+		if repeat, err = t.repeatUpdate(editTarget, req.GetString("status", "")); err != nil {
 			return errResult(err.Error()), nil
 		}
 	}
@@ -3822,7 +3921,11 @@ func (t *ThingsMCP) handleEditTask(_ context.Context, req mcp.CallToolRequest) (
 		}
 	}
 
-	if err := t.writeAndSync(writeEnvelope{id: taskUUID, action: 1, kind: "Task6", payload: u.build()}); err != nil {
+	items := []thingscloud.Identifiable{writeEnvelope{id: taskUUID, action: 1, kind: "Task6", payload: u.build()}}
+	if repeat != nil {
+		items = append(items, *repeat)
+	}
+	if err := t.writeAndSync(items...); err != nil {
 		return errResult(fmt.Sprintf("edit task: %v", err)), nil
 	}
 	return jsonResult(map[string]string{"status": "updated", "uuid": taskUUID}), nil
@@ -4209,7 +4312,7 @@ func allTools(um *UserManager) []server.ServerTool {
 		// --- Modify tools ---
 		{
 			Tool: mcp.NewTool("things_edit_item",
-				mcp.WithDescription("Edit an existing task or project in Things 3. Only provided fields are updated; omitted fields remain unchanged. Can also change status to complete, cancel, trash, or restore items. A to-do that repeats on a schedule can be completed here, and the next one appears on its date; one that repeats after completion has to be completed in the Things app, which schedules the next one. Repeats themselves are set up and changed in the Things app. Returns {status: \"updated\", uuid}."),
+				mcp.WithDescription("Edit an existing task or project in Things 3. Only provided fields are updated; omitted fields remain unchanged. Can also change status to complete, cancel, trash, or restore items. A repeating to-do can be completed, canceled or reopened here, and its next one comes as in the Things apps: on its date for a repeat on a schedule, and the set time after the day it was done for a repeat after completion. A to-do that repeats after completion is trashed or restored in the Things app, as is one whose repeat stops after a count or an end date, and repeats themselves are set up and changed there. Returns {status: \"updated\", uuid}."),
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),

@@ -1008,7 +1008,7 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_edit_item</div>
-    <div class="tool-entry-desc">Edit a task or project (only provided fields change). A to-do that repeats on a schedule can be completed here; one that repeats after completion is completed in the Things app, where repeats are also set up and changed.</div>
+    <div class="tool-entry-desc">Edit a task or project (only provided fields change). A repeating to-do can be completed, canceled or reopened here, and its next one comes as in the Things apps; repeats are set up and changed in the Things app.</div>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Item UUID</td></tr>
@@ -1546,7 +1546,7 @@ var HowItWorksPageHTML = `<!DOCTYPE html>
     <li><span class="cap-dot"></span> Serialize each account's sync and write operations to prevent cursor races</li>
     <li><span class="cap-dot"></span> Fail closed on unknown schemas, malformed events, and uncertain commits; never retry an uncertain write</li>
     <li><span class="cap-dot"></span> Require explicit confirmation for permanent deletions</li>
-    <li><span class="cap-dot"></span> Leave repeat rules, and completing to-dos that repeat after completion, to the Things apps</li>
+    <li><span class="cap-dot"></span> Complete repeating to-dos so the next one comes as in the Things apps, which keep setting up and changing repeats</li>
     <li><span class="cap-dot"></span> All changes sync to your Things apps in real-time via Things Cloud</li>
   </ul>
 </div>
